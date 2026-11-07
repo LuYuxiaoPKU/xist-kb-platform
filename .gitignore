@@ -1,0 +1,56 @@
+# 运行期数据与产物
+data/
+*.parquet
+*.duckdb
+*.duckdb.wal
+*.db
+*.db-journal
+
+# 原始层
+bronze/
+silver/
+gold/
+
+# PDF 与全文
+papers/
+*.pdf
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+web/.next/
+web/dist/
+web/build/
+
+# 环境与密钥
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志
+logs/
+*.log
+
+# 未发表数据（跨会话协作结果，禁止入库）
+private/
