@@ -53,3 +53,21 @@ uv run xist --help
 ## 许可
 
 代码 MIT。数据由各原始来源的许可决定，不随本仓库分发。
+
+## 当前进度
+
+阶段 1（数据层）已完成：
+
+- Gold 层 7 张 Parquet，共 34 MB（V2 SQLite 为 217 MB）
+- 296,835 篇 papers、115,674 条 claims、12,123 条 provenance
+- DuckDB 查询层与 CLI：`xist stats`、`xist search`、`xist paper`
+- 清洗与缺口记入 `data/quality_report.json`
+
+```bash
+xist stats
+xist search --text DDX39A --limit 5
+xist search --topic xci --species "Mus musculus"
+xist paper deng2011_abc
+```
+
+下一步是阶段 2（字符区间级溯源重建）。
