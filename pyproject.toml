@@ -58,6 +58,10 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# typer's API requires calling Argument/Option in the signature defaults.
+"src/xist_kb/cli.py" = ["B008"]
+
 [tool.mypy]
 python_version = "3.11"
 warn_unused_ignores = true
