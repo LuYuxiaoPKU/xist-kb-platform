@@ -3,6 +3,9 @@
 Every module resolves paths through here so a single environment variable
 (XIST_KB_DATA) can relocate the data tree — the server deployment keeps data
 outside the checkout, since Parquet and PDFs must never enter git.
+
+The .env beside the checkout is loaded once at import so command-line runs
+pick up XIST_KB_DATA without the caller having to export it first.
 """
 
 from __future__ import annotations
@@ -10,8 +13,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = Path(os.environ.get("XIST_KB_DATA", PROJECT_ROOT / "data"))
+
+_DOTENV = PROJECT_ROOT / ".env"
+if _DOTENV.exists():
+    load_dotenv(_DOTENV, override=False)
+
+DATA_DIR = Path(os.environ.get("XIST_KB_DATA") or PROJECT_ROOT / "data")
 
 BRONZE_DIR = DATA_DIR / "bronze"  # raw API responses, gzipped JSONL
 SILVER_DIR = DATA_DIR / "silver"  # normalized entity tables
