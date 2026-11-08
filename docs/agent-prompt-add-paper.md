@@ -38,6 +38,47 @@
 Kady 写完 JSON 之后，从**第 1 步**（查重）开始按本文档执行——第 3 步的
 `--claims` 及之后必须跑，只写 JSON 不会进平台。
 
+### 两条路径，先选一条
+
+关键事实（`migrate_v2.py`：`build_claims` 走 `iter_claim_rows()` 只读
+`notes/claims/*.csv`；只有 `build_interactors` / `build_regulations` /
+`build_xci_status` / `build_species_xist` 用 `iter_table()` 读 sqlite）：
+
+| 你要加什么 | 本地跑什么 | 要传 sqlite 吗 |
+|---|---|---|
+| **只加 claims**（`claims` 数组） | `--claims` | **不传**。省掉 217 MB 和 `--kb --rebuild` |
+| 还要加 `interactors` / `regulators` / `xci_status` / `species_xist` | `--claims` + `--evidence --kb --rebuild` | 要传 |
+
+**"不传 sqlite"不等于"删掉 sqlite"。** `Migration.run()` 开头会调
+`V2Source.check()`，它要求 `xist_knowledge.db` **存在**，然后无条件读那四张侧表。
+
+服务器上那份 db 的四张表有 32,051 行（`interactors` 5,312 / `regulations` 3,286 /
+`xci_status` 9,984 / `species_xist` 13,469）。`migrate-v2` 每次都**全量重写** gold，
+会用 db 的内容重新生成这四张表——所以 db 必须原样保留。删了会 `FileNotFoundError`；
+换成空表会让这四张表变成 0 行，图表全空，而且不报错。
+
+走轻量路径时：**不覆盖、不删除服务器上现有的 `xist_knowledge.db`**，只是在本地不跑
+`--kb`、不 scp 那个文件。
+
+轻量路径的完整命令：
+
+```bash
+# 本地
+py scripts/run_pipeline.py --claims
+
+# 传三个文件 + papers.csv 一行
+scp notes/claims/{paper_id}_claims.csv luyx@...:/Data7/luyx/XIST-KB/data/v2src/notes/claims/
+scp papers/text/{paper_id}.txt        luyx@...:/Data7/luyx/XIST-KB/data/v2/papers/text/
+scp notes/json/{paper_id}.json        luyx@...:/Data7/luyx/XIST-KB/data/v2src/notes/json/
+scp metadata/papers.csv               luyx@...:/Data7/luyx/XIST-KB/data/v2src/metadata/
+
+# 服务器（不跑 --kb，不碰 db）
+.venv/bin/xist migrate-v2 /Data7/luyx/XIST-KB/data/v2src
+.venv/bin/python scripts/rebuild_derived.py
+```
+
+先停服务再跑（`./deploy/serve.sh stop`），因为 `rebuild_derived.py` 会替换索引文件。
+
 ## 第 1 步：确认论文不在库中
 
 在本地 V2 目录：
@@ -75,6 +116,11 @@ grep -i "<doi 或标题关键词>" metadata/papers.csv
 `balaton2016_escape`、三个文件用 `Balaton2016_Escape`，迁移后 claims 与全文都能
 正确关联。但**拼写必须一致**：`Deng2011_evidence` 与 `Deng2011_expression` 会被
 当成两篇论文，前者有全文、后者变成孤儿 claim。
+
+**新增论文统一用全小写。** `--claims` 按 JSON 文件名原样生成 CSV（保留大小写），
+两个仅大小写不同的 JSON 会产出两个 CSV，迁移时都小写成同一个 `paper_id`，
+每条 claim 就变成两份。`dup` 会报非零，但那时已经写进 gold 了。
+（截至 2026-11-09，本地与服务器 `notes/json/` 的重复组数都是 0。）
 
 `status` 填 `text_downloaded`（有全文）或 `abstract_only`（只有题录）。
 查不到的字段留空，不要填空格或 `NA`。
@@ -162,9 +208,16 @@ py scripts/run_pipeline.py --parse
 
 平台读的是 `notes/claims/*_claims.csv`，**不是 JSON**。
 
+**只加 claims 时：**
+
 ```bash
 cd "C:/00_Data/实验室/实验室/MetaAnalysis/XIST_Project_V2"
 py scripts/run_pipeline.py --claims
+```
+
+**还要加四个侧表段落时，追加一行：**
+
+```bash
 py scripts/run_pipeline.py --evidence --kb --rebuild
 ```
 
@@ -176,10 +229,11 @@ py scripts/run_pipeline.py --evidence --kb --rebuild
   rm notes/claims/{paper_id}_claims.csv
   ```
 - **`--evidence` 每次全量重写** `reviews/evidence_tables/*.csv`（`_save_csv` 用
-  `open(..., "w")`），不需要手动删。
+  `open(..., "w")`），不需要手动删。只有加了侧表段落才需要跑。
 - **`--kb` 必须带 `--rebuild`。** 不带时走 `create_tables` 而非 `rebuild_schema`，
   然后无条件 `INSERT INTO claims`，同一批数据写两遍。**实测：115,674 → 231,348，
-  正好翻倍。** 绝不并发跑两个 `--kb --rebuild`（同样是 DROP/INSERT 交错翻倍）。
+  正好翻倍。** 绝不并发跑两个 `--kb --rebuild`。**只加 claims 时完全不用跑这条**，
+  跑它才是自找翻倍。
 
 验证（改完立刻查，别等部署时才发现）：
 
@@ -220,6 +274,12 @@ cd /Data7/luyx/XIST-KB/app
 
 `rebuild_derived.py` 里的顺序不能手动拆开跑（scope / species_fill / regulators
 必须早于索引构建）。
+
+两条路径在这一步完全相同——都跑 `migrate-v2` + `rebuild_derived.py`，都不需要
+`--kb`。区别只在第 3、4 步：有没有更新并上传 `xist_knowledge.db`。
+
+`migrate-v2` 会全量重写 gold 下 13 张表，包括从 sqlite 读的四张侧表。所以**服务器上
+的 `xist_knowledge.db` 必须原样存在**，即使你这次没更新它。
 
 ## 第 6 步：验收
 
