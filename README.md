@@ -165,7 +165,7 @@ schema，但只有 `claims` 数组是必填的——其余空着不会报错，�
 
 | JSON 字段 | 写入数据库的列 | 约束 |
 |---|---|---|
-| `claim` | `claim_text` | 必填。为空则该条被丢弃 |
+| `claim` | `claim` | 必填。为空则该条被丢弃 |
 | `topic` | `topic` | 字符串或数组。只认模板里那 20 个值，其他归一化到 `other`，不报错 |
 | `evidence` | `evidence` | 自由文本 |
 | `evidence_type` | `evidence_type` | 6 个枚举值之一 |
@@ -244,9 +244,10 @@ xist migrate-v2 /path/to/XIST_Project_V2
 python scripts/rebuild_derived.py
 ```
 
-`migrate-v2` 读 V2 的 `papers.csv`、`notes/claims/*.csv`、`xist_knowledge.db`、
-`papers/text/*.txt` 四样，缺任一样直接报错退出（`notes/json` 只用来标记
-`has_annotation`）。`rebuild_derived.py` 固化了两者之间的全部顺序依赖，不要手动分步跑。
+`migrate-v2` 读 V2 的 `papers.csv`、`notes/claims/*.csv`、`xist_knowledge.db` 三样，
+缺任一样直接报错退出；`notes/json` 只用来标记 `has_annotation`。`papers/text/*.txt`
+不在检查之列——完全没有它也能迁移，只是所有 claim 都没有字符区间溯源。
+`rebuild_derived.py` 固化了两者之间的全部顺序依赖，不要手动分步跑。
 
 重建前先停服务——服务进程会锁住 DuckDB 文件，原子替换会失败：
 
