@@ -92,7 +92,10 @@ def _fetch(
 ) -> tuple[list[tuple], list[str]]:
     """Execute and return (rows, column names) in one shot."""
     cursor = conn.execute(sql, params)
-    columns = [d[0] for d in cursor.description]
+    # duckdb 1.2's stubs type `description` as `list | None`, 2.0's as a bare
+    # list. CI pins <1.3 for the CentOS 7 wheel, so guard for the older typing.
+    # It is never None here: every query passed to this helper returns rows.
+    columns = [d[0] for d in cursor.description or []]
     return cursor.fetchall(), columns
 
 
@@ -384,7 +387,7 @@ def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list
         """,
         [pattern, *params, f.limit, f.offset],
     )
-    columns = [d[0] for d in cursor.description]
+    columns = [d[0] for d in cursor.description or []]
     page = cursor.fetchall()
     if not f.exact_total:
         return _to_dicts(page, columns), len(page)
@@ -443,7 +446,7 @@ def _fts_search(
             """,
             [f.text, f"%{needle}%", *params, f.limit, f.offset],
         )
-        columns = [d[0] for d in cursor.description]
+        columns = [d[0] for d in cursor.description or []]
         return _to_dicts(cursor.fetchall(), columns), int(literal_total[0])
 
     # No literal occurrence: the query is a genuine keyword search, and BM25
@@ -459,7 +462,7 @@ def _fts_search(
         """,
         [f.text, f.text, *params, f.limit, f.offset],
     )
-    columns = [d[0] for d in cursor.description]
+    columns = [d[0] for d in cursor.description or []]
     page = _to_dicts(cursor.fetchall(), columns)
 
     total_row = conn.execute(

@@ -24,6 +24,10 @@ dependencies = [
     "rich>=13.7.0",
     "python-dotenv>=1.0.0",
     "tqdm>=4.66.0",
+    # duckdb 1.2.x imports pytz when it materialises timestamp columns, but
+    # pandas 3.x no longer depends on it. Without this, any query touching a
+    # timestamp raises InvalidInputException at fetch time rather than import.
+    "pytz>=2024.1",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +47,10 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
+    # tests/test_api.py imports fastapi.testclient; on current starlette that
+    # pulls httpx2, which is not a declared dependency of either the `api` or
+    # `dev` group, so a clean install cannot collect the suite without it.
+    "httpx2>=2.13",
 ]
 
 [project.scripts]
