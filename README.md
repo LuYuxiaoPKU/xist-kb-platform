@@ -106,10 +106,15 @@ paper_id,title,year,journal,doi,pmid,species,taxonomic_group,first_author,status
 deng2011_10_1038_nature09898,Evidence for compensatory upregulation of expressed X-linked genes,2011,Nature Genetics,10.1038/ng.986,22019772,Mus musculus,Rodent,Jun Deng,text_downloaded
 ```
 
-`paper_id` 规则是 `{第一作者姓氏小写}{年份}_{DOI 下划线化}`。**四处必须完全一致**：
+`paper_id` 有两种风格并存。88% 的既有论文是 `{Author}{Year}_{keyword}`（`Balaton2016_escape`、
+`Lee2005_regulation`）；带 DOI 的新论文用 `{Author}{Year}_{DOI 下划线化}`。**跟随该论文在
+V2 里已有的命名**，不要为了套用规则去重命名已有文件。
+
 CSV 的 `paper_id`、`notes/json/{paper_id}.json`、`notes/claims/{paper_id}_claims.csv`、
-`papers/text/{paper_id}.txt`。大小写不一致不会报错，只会变成两篇不同的论文。
-平台在读取时统一小写，但不要让源数据依赖这一步。
+`papers/text/{paper_id}.txt` 四处用同一个名字。**大小写可以不一致**——平台读取时统一
+小写（`vocab.py:normalize_paper_id`），再经 `silver/paper_id_map.parquet` 映射回真实
+文件名，实测注册表小写、三个文件大写也能正确关联。但**拼写必须一致**：
+`Deng2011_evidence` 与 `Deng2011_expression` 会被当成两篇论文，后者成为孤儿 claim。
 
 `status` 有以下取值，含义是处理进度而非内容判断：
 
@@ -164,12 +169,13 @@ schema，但只有 `claims` 数组是必填的——其余空着不会报错，�
 }
 ```
 
-`claims` 里 13 个字段逐条对应 `notes/claims/*_claims.csv` 的列，**改字段名会被静默丢弃**：
+`claims` 里有 **12 个字段**，对应 `notes/claims/*_claims.csv` 的 13 列——第 13 列
+`paper_id` 由文件名注入，不用写进 JSON。**改字段名会被静默丢弃**：
 
 | JSON 字段 | 写入数据库的列 | 约束 |
 |---|---|---|
 | `claim` | `claim` | 必填。为空则该条被丢弃 |
-| `topic` | `topic` | 字符串或数组。只认模板里那 20 个值，其他归一化到 `other`，不报错 |
+| `topic` | `topic` | 字符串或数组。只认代码里那 22 个值（`vocab.py:STANDARD_TOPICS`）。**模板只有 20 个**，缺 `polycomb` 和 `xist_expression_regulation`（模板误写成 `xist_expression`，那是另一个 topic），照抄模板会静默归错类 |
 | `evidence` | `evidence` | 自由文本 |
 | `evidence_type` | `evidence_type` | 6 个枚举值之一 |
 | `directness` | `directness` | `direct` / `indirect` / `speculative` |

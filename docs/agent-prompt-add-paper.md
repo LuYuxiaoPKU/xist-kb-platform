@@ -41,14 +41,26 @@ grep -i "<doi 或标题关键词>" metadata/papers.csv
 
 表头固定 10 字段：`paper_id,title,year,journal,doi,pmid,species,taxonomic_group,first_author,status`
 
-`paper_id` 规则：`{第一作者姓氏全小写}{年份}_{DOI 中非字母数字字符替换为下划线}`。
-例：DOI `10.1038/ng.986`、2011 年、第一作者 Deng → `deng2011_10_1038_ng_986`。
+`paper_id` 规则：`{第一作者姓氏}{年份}_{DOI 中非字母数字字符替换为下划线}`，
+姓氏首字母大写。例：DOI `10.1038/ng.986`、2011 年、第一作者 Deng →
+`Deng2011_10_1038_ng_986`。
 
-下面四个文件名必须与 `paper_id` **完全一致**（大小写也算）：
+库里 88% 的论文并不用这种 DOI 风格，而是 `{Author}{Year}_{keyword}`，例如
+`Balaton2016_escape`、`Lee2005_regulation`、`Deng2011_evidence`。两种风格并存是
+历史事实。**新论文跟随该论文在 V2 里已有的命名**——如果 PDF 已经叫某个名字，
+就用那个名字，不要按 DOI 规则重命名。只有全新加入、毫无既有命名的论文才用 DOI 风格。
+
+下面四个文件用**同一个** `paper_id`：
 - `metadata/papers.csv` 里的 `paper_id`
 - `notes/json/{paper_id}.json`
 - `notes/claims/{paper_id}_claims.csv`
 - `papers/text/{paper_id}.txt`
+
+**大小写不必完全一致**——平台在读取时统一小写（`vocab.py:normalize_paper_id`），
+并通过 `silver/paper_id_map.parquet` 映射回磁盘上的真实文件名。实测：注册表用
+`balaton2016_escape`、三个文件用 `Balaton2016_Escape`，迁移后 claims 与全文都能
+正确关联。但**拼写必须一致**：`Deng2011_evidence` 与 `Deng2011_expression` 会被
+当成两篇论文，前者有全文、后者变成孤儿 claim。
 
 `status` 填 `text_downloaded`（有全文）或 `abstract_only`（只有题录）。
 查不到的字段留空，不要填空格或 `NA`。
@@ -86,17 +98,28 @@ grep -i "<doi 或标题关键词>" metadata/papers.csv
 
 四条硬约束（违反其一，数据会静默劣化）：
 
-1. **字段名不能自创。** 13 个字段名与 `notes/claims/*_claims.csv` 的列一一对应。
+1. **字段名不能自创。** JSON 的 `claims[]` 里有 **12 个字段**，对应 claims CSV
+   的 13 列——第 13 列 `paper_id` 由文件名注入，不需要也不应该写在 JSON 里。
    写成 `quote_text` 会被丢弃，该 claim 的溯源降级。
 2. **`paragraph` 必须是从全文逐字复制的原句。** 写成 `"Results section 2"`
    会让该 claim 无法在全文里定位（溯源 S 档）。**先读 `papers/text/{paper_id}.txt`，
    从里面复制原句。**
-3. **`topic` 只能用模板里的 20 个值**：`xist_identification`, `xist_expression`,
-   `xist_expression_regulation`, `xist_rna_function`, `xist_protein_interactions`,
-   `xci`, `early_embryo`, `totipotency`, `dosage_compensation`, `gene_silencing`,
-   `cancer_biology`, `chromatin`, `lncrna`, `nuclear_organization`,
-   `phase_separation`, `m6a`, `xist_evolution`, `sex_chromosome_biology`,
-   `methods`, `ddx39`, `other`。其他值会被归一化到 `other`，**不报错**。
+3. **`topic` 只能用代码里那 22 个值**（`vocab.py:STANDARD_TOPICS`）。
+   **不要照抄 `templates/xist_paper.yaml:190`——模板只有 20 个，缺两个**：
+   `polycomb` 和 `xist_expression_regulation`。后者尤其危险：模板里写成
+   `xist_expression`，而那是另一个真实存在的 topic，照抄会静默归错类而不报错。
+
+   完整 22 个：
+   `xist_identification`, `xist_expression`, `xist_expression_regulation`,
+   `xist_rna_function`, `xist_protein_interactions`, `xci`, `early_embryo`,
+   `totipotency`, `dosage_compensation`, `gene_silencing`, `cancer_biology`,
+   `chromatin`, `lncrna`, `nuclear_organization`, `phase_separation`, `m6a`,
+   `xist_evolution`, `sex_chromosome_biology`, `methods`, `polycomb`, `ddx39`,
+   `other`。
+
+   `polycomb` 在库里 3,572 条，是第 9 大 topic；`xist_expression_regulation`
+   3,526 条排第 10。写错不会报错，只会被归一化到 `other`——而 `other` 已经是
+   35,108 条的最大类，混进去就再也分不出来了。
 4. **查不到的写 `"not reported"`，绝不推测。** 这个库出过编造 Addgene 编号的事故。
 
 可选段落（各自成表，空着不报错）：
@@ -138,9 +161,11 @@ py scripts/run_pipeline.py --evidence --kb --rebuild
   ```bash
   rm notes/claims/{paper_id}_claims.csv
   ```
-- **`--evidence` 每次全量重写** `reviews/evidence_tables/*.csv`，不需要手动删。
-- **`--kb` 必须带 `--rebuild`。** 不带是追加插入，同一批 claims 写两遍，表直接翻倍。
-  绝不并发跑两个 `--kb --rebuild`。
+- **`--evidence` 每次全量重写** `reviews/evidence_tables/*.csv`（`_save_csv` 用
+  `open(..., "w")`），不需要手动删。
+- **`--kb` 必须带 `--rebuild`。** 不带时走 `create_tables` 而非 `rebuild_schema`，
+  然后无条件 `INSERT INTO claims`，同一批数据写两遍。**实测：115,674 → 231,348，
+  正好翻倍。** 绝不并发跑两个 `--kb --rebuild`（同样是 DROP/INSERT 交错翻倍）。
 
 验证（改完立刻查，别等部署时才发现）：
 
@@ -201,6 +226,11 @@ print('total claims:',c.execute('SELECT count(*) FROM claims').fetchone()[0])
 加上自动生成的 regulators/interactors 条数。
 
 `total claims` 与原值比较：只加不减。比原值多出的条数应等于新论文的贡献。
+
+**必须直接查这张 SQL，不要相信迁移日志里 `claims_without_paper` 那个字段——它恒为 0。**
+`MigrationStats.claims_without_paper` 只声明从未赋值（`migrate_v2.py:245`），实测
+`papers.csv` 用 `balaton2016_different`、三个文件用 `Balaton2016_escape` 时它报 0，
+而实际孤儿是 1。孤儿是拼写不一致的唯一信号，漏看就会在检索里看到一条没有出处的 claim。
 
 ## 报告格式
 
