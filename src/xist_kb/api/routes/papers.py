@@ -9,9 +9,11 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 
+from xist_kb import ask as asker
 from xist_kb.api.deps import resources
 from xist_kb.api.serialize import clean_rows
 from xist_kb.query import search as q
+from xist_kb.query.aggregate import visualizing_payload
 
 router = APIRouter(prefix="/api", tags=["papers"])
 
@@ -124,6 +126,39 @@ def xci_status(
             [*params, limit],
         ).fetchdf()
     return {"total": len(rows), "items": clean_rows(rows.to_dict("records"))}
+
+
+@router.get("/visualize")
+def visualize() -> dict:
+    """Aggregations for the charts page: interactors, species, years, marks."""
+    res = resources()
+    with res.lock:
+        return visualizing_payload(res.conn)
+
+
+@router.get("/ask")
+def ask(
+    q_: Annotated[str, Query(alias="q", min_length=3)],
+) -> dict:
+    """Answer a question from retrieved claims and paper text.
+
+    Returns the retrieved evidence even when no answer is generated -- an
+    unavailable model must leave the reader with something to inspect, not an
+    empty page.
+    """
+    res = resources()
+    with res.lock:
+        result = asker.answer(res.conn, q_)
+    return {
+        **result,
+        "claims": clean_rows(result["claims"]),
+        "chunks": clean_rows(result["chunks"]),
+    }
+
+
+@router.get("/ask/budget")
+def ask_budget() -> dict:
+    return asker.budget_remaining()
 
 
 @router.get("/stats")

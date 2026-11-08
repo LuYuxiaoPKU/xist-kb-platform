@@ -7,6 +7,8 @@ import { FullTextPage } from './pages/FullText'
 import { PaperPage } from './pages/Paper'
 import { ReviewPage } from './pages/Review'
 import { SearchPage } from './pages/Search'
+import { AskPage } from './pages/Ask'
+import { VisualizePage } from './pages/Visualize'
 
 export default function App() {
   const [key, setKey] = useState(apiKey())
@@ -25,6 +27,8 @@ export default function App() {
           <NavLink to="/search">检索</NavLink>
           <NavLink to="/fulltext">全文</NavLink>
           <NavLink to="/review">审阅</NavLink>
+          <NavLink to="/visualize">图表</NavLink>
+          <NavLink to="/ask">提问</NavLink>
         </nav>
         <span style={{ flex: 1 }} />
         <button onClick={() => setShowKey((v) => !v)} style={{ fontSize: 12.5 }}>
@@ -63,6 +67,8 @@ export default function App() {
           <Route path="/search" element={<SearchPage />} />
           <Route path="/fulltext" element={<FullTextPage />} />
           <Route path="/review" element={<ReviewPage />} />
+          <Route path="/visualize" element={<VisualizePage />} />
+          <Route path="/ask" element={<AskPage />} />
           <Route path="/paper/:paperId" element={<PaperPage />} />
         </Routes>
       </main>

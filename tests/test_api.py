@@ -367,3 +367,24 @@ def test_malformed_network_entry_is_a_hard_error(client, monkeypatch):
     monkeypatch.setenv("XIST_KB_ALLOWED_NETS", "not-a-network")
     with pytest.raises(RuntimeError, match="invalid network"):
         client.get("/api/claims")
+
+
+class TestAsk:
+    """The ask endpoint must return evidence even with no model configured."""
+
+    def test_returns_evidence_without_api_key(self, client, monkeypatch):
+        monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+        body = client.get("/api/ask?q=XIST").json()
+        assert body["answer"] is None
+        assert "ANTHROPIC_API_KEY" in body["error"]
+        assert body["chunks"]
+
+    def test_budget_endpoint(self, client):
+        body = client.get("/api/ask/budget").json()
+        assert body["limit_usd"] > 0
+        assert body["remaining_usd"] <= body["limit_usd"]
+
+    def test_no_model_call_when_budget_exhausted(self, client, monkeypatch):
+        monkeypatch.setenv("XIST_KB_DAILY_TOKEN_BUDGET", "0")
+        body = client.get("/api/ask?q=XIST").json()
+        assert "预算" in (body["error"] or "")

@@ -153,6 +153,25 @@ export interface Stats {
   tiers: { tier: string; count: number }[]
 }
 
+export interface AskResult {
+  question: string
+  claims: Claim[]
+  chunks: Chunk[]
+  answer: string | null
+  model: string | null
+  usage: { input_tokens: number; output_tokens: number; cost_usd: number } | null
+  error: string | null
+}
+
+export interface Visualize {
+  interactors: { protein: string; claims: number; papers: number }[]
+  species: { species: string; count: number }[]
+  years: { year: number; count: number }[]
+  xci_types: { xci_type: string; count: number }[]
+  chromatin_marks: { mark: string; papers: number }[]
+  chromatin_mark_papers: number
+}
+
 export interface ClaimFilters {
   topic?: string[]
   confidence?: string[]
@@ -168,6 +187,12 @@ export interface ClaimFilters {
 export const api = {
   health: () => request<{ status: string; version: string }>('/api/health'),
   stats: () => request<Stats>('/api/stats'),
+  visualize: () => request<Visualize>('/api/visualize'),
+  ask: (q: string) => request<AskResult>(`/api/ask?q=${encodeURIComponent(q)}`),
+  askBudget: () =>
+    request<{ date: string; spent_usd: number; limit_usd: number; remaining_usd: number }>(
+      '/api/ask/budget',
+    ),
   claims: (f: ClaimFilters) => request<Page<Claim>>(`/api/claims${qs({ ...f })}`),
   claim: (id: string) => request<Claim>(`/api/claims/${encodeURIComponent(id)}`),
   claimContext: (id: string) =>

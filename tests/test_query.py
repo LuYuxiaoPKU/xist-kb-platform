@@ -500,3 +500,32 @@ class TestRerank:
         ]
         ranked = search._rerank(rows, "unrelated")
         assert [r["text"] for r in ranked] == ["second", "first"]
+
+
+class TestVisualize:
+    def test_payload_shape(self, gold):
+        from xist_kb.query.aggregate import visualizing_payload
+
+        conn = connect(gold)
+        payload = visualizing_payload(conn)
+        assert set(payload) >= {
+            "interactors",
+            "species",
+            "years",
+            "xci_types",
+            "chromatin_marks",
+            "chromatin_mark_papers",
+        }
+
+    def test_mark_dict_is_parsed(self):
+        from xist_kb.query.aggregate import _mark_value
+
+        parsed = _mark_value("{'h3k27me3': 'enriched', 'h2ak119ub': None}")
+        assert parsed["h3k27me3"] == "enriched"
+        assert "h2ak119ub" not in parsed
+
+    def test_unparseable_mark_returns_empty(self):
+        from xist_kb.query.aggregate import _mark_value
+
+        assert _mark_value("not a dict") == {}
+        assert _mark_value("") == {}
