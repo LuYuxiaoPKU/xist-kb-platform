@@ -102,8 +102,41 @@ from a bare `curl` — that is expected, since the endpoint rejects unauthentica
 requests; it does not mean the host is blocked. Verify with a real API call
 before assuming egress is restricted.
 
+`github.com:443` **is** unreachable: `git fetch` fails with `Failed to connect to
+github.com port 443 after 127229 ms`. See Mirrors below.
+
 ## Mirrors
 
 Package installs from PyPI are slow (a 20 MB duckdb wheel took ~50 s). If this
 becomes painful, an internal mirror or `pip config set global.index-url` to a
 domestic mirror would help; ask before changing global pip config.
+
+### GitHub: fetch goes through a mirror
+
+Fetch and push are pointed at different URLs (2026-11-09), so `git fetch` and
+`git pull` work while `push` stays on the canonical remote:
+
+```bash
+git remote set-url        origin https://ghproxy.net/https://github.com/LuYuxiaoPKU/xist-kb-platform.git
+git remote set-url --push origin https://github.com/LuYuxiaoPKU/xist-kb-platform.git
+```
+
+Measured from this host: `ghproxy.net` completes `git fetch` in ~5 s;
+`ghfast.top` also serves the repo and is a drop-in replacement;
+`gitclone.com` returns 502; `hub.fastgit.org` and `mirror.ghproxy.com` time out.
+A bare `curl https://ghproxy.net/https://github.com` returns 403 — that is the
+proxy refusing a bare repo-less path, not a blocked mirror. Test with
+`git ls-remote`, not `curl`:
+
+```bash
+git ls-remote origin      # prints 40-hex HEAD in a few seconds when healthy
+```
+
+Push from this host does not work (no credentials, and github.com is
+unreachable). That is fine — this checkout is read-only.
+
+If both mirrors die, fall back to carrying a bundle over scp: run
+`git bundle create /tmp/x.bundle master` locally, `scp` it over, then
+`git fetch /tmp/x.bundle '+refs/heads/master:refs/remotes/origin/master'` and
+`git merge --ff-only origin/master`. The leading `+` is required because the
+server's history diverged once during a commit-email rewrite.
