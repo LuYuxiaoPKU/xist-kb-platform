@@ -262,6 +262,9 @@ if __name__ == "__main__":
     gold = data / "gold" if (data / "gold").is_dir() else data
     text_dir = Path(os.environ["XIST_KB_TEXT_DIR"])
     report = build(
-        gold / "claims.parquet", gold / "provenance.parquet", text_dir, gold / "claim_provenance.parquet"
+        gold / "claims.parquet",
+        gold / "provenance.parquet",
+        text_dir,
+        gold / "claim_provenance.parquet",
     )
     print(json.dumps(report, indent=1, ensure_ascii=False))
