@@ -12,6 +12,7 @@
 #   deploy/serve.sh stop      # stops the loop and the server
 #   deploy/serve.sh restart
 #   deploy/serve.sh status
+#   deploy/serve.sh logs      # tail the log
 #
 # Binding: 127.0.0.1 by default. Reach it from outside with an SSH tunnel
 # (`ssh -L 8420:127.0.0.1:8420 luyx@host`), which is how the lab uses it. To bind
@@ -30,6 +31,35 @@ LOG_FILE="$RUN_DIR/xist-kb.log"
 PORT="${XIST_KB_PORT:-8420}"
 HOST="${XIST_KB_HOST:-127.0.0.1}"
 PYTHON="$APP_DIR/.venv/bin/python"
+
+# Rotation instead of logrotate: this host has no systemd timer and no cron
+# entry for this service, and a log that grows without bound is the kind of
+# thing nobody notices until the disk is full. Checked once at startup and then
+# on every restart the loop performs, which is when there is a natural break in
+# the file's writer.
+LOG_MAX_BYTES="${XIST_KB_LOG_MAX_BYTES:-10485760}"   # 10 MB
+LOG_KEEP="${XIST_KB_LOG_KEEP:-3}"
+
+rotate_log() {
+    [[ -f "$LOG_FILE" ]] || return 0
+    local size
+    size="$(stat -c %s "$LOG_FILE" 2>/dev/null || echo 0)"
+    (( size > LOG_MAX_BYTES )) || return 0
+    # Shift the numbered archives down and drop the oldest. Written as an `if`
+    # rather than `[[ ... ]] && mv`: under `set -e` the short-circuit form makes
+    # the function return non-zero whenever the archive does not exist, which
+    # aborts the caller on the first missing file.
+    local i=$((LOG_KEEP - 1))
+    while (( i > 0 )); do
+        if [[ -f "$LOG_FILE.$i" ]]; then
+            mv -f "$LOG_FILE.$i" "$LOG_FILE.$((i + 1))"
+        fi
+        i=$((i - 1))
+    done
+    mv -f "$LOG_FILE" "$LOG_FILE.1"
+    : > "$LOG_FILE"
+    return 0
+}
 
 mkdir -p "$RUN_DIR"
 
@@ -53,6 +83,7 @@ start() {
         return 0
     fi
     echo "starting on $HOST:$PORT; log: $LOG_FILE"
+    rotate_log
     # The loop is the supervised process; uvicorn is its child. Restarting only
     # uvicorn keeps the PID file stable, so `stop` always finds the loop.
     #
@@ -64,14 +95,19 @@ start() {
     #
     # `$BASHPID` rather than `$$`: inside a subshell `$$` is the parent shell's
     # PID, so the file named the SSH session instead of the loop.
+    #
+    # Log size is checked before each restart: that is the only moment the file
+    # has no writer, so the rotation cannot truncate a line mid-write.
     setsid bash -c '
         echo $BASHPID > "$1"
         while true; do
+            "$6" rotate >/dev/null 2>&1 || true
             "$2" -m xist_kb.api.serve --host "$3" --port "$4" >>"$5" 2>&1 || true
             echo "$(date -Is) uvicorn exited, restarting in 5s" >>"$5"
             sleep 5
         done
-    ' _ "$PID_FILE" "$PYTHON" "$HOST" "$PORT" "$LOG_FILE" </dev/null >>"$LOG_FILE" 2>&1 &
+    ' _ "$PID_FILE" "$PYTHON" "$HOST" "$PORT" "$LOG_FILE" "$0" \
+        </dev/null >>"$LOG_FILE" 2>&1 &
     sleep 3
     if pid="$(running_pid)"; then
         echo "started (pid $pid)"
@@ -116,8 +152,12 @@ case "${1:-}" in
     stop) stop ;;
     restart) stop; start ;;
     status) status ;;
+    # Internal: called by the restart loop before each launch, when the log has
+    # no writer and can be safely moved aside.
+    rotate) rotate_log ;;
+    logs) exec tail -n "${2:-50}" -f "$LOG_FILE" ;;
     *)
-        echo "usage: $0 {start|stop|restart|status}" >&2
+        echo "usage: $0 {start|stop|restart|status|logs}" >&2
         exit 2
         ;;
 esac
