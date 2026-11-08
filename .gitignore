@@ -51,9 +51,10 @@ web/build/
 .DS_Store
 Thumbs.db
 
-# 日志
+# 日志与运行期状态（deploy/serve.sh 写 PID 与日志）
 logs/
 *.log
+/run/
 
 # 未发表数据（跨会话协作结果，禁止入库）
 private/
