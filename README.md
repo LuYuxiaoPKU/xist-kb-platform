@@ -89,6 +89,9 @@ papers/text/*.txt    ─┘                                          ├─→ m
 xist_knowledge.db    ────────── (--evidence --kb --rebuild) ─────┘
 ```
 
+交给 agent 远程执行时用 [docs/agent-prompt-add-paper.md](docs/agent-prompt-add-paper.md)，
+它把服务器上哪一步能做、哪一步做不了写清楚了（服务器只有数据，没有 V2 代码和 `claude` CLI）。
+
 ### 1. 注册条目：`metadata/papers.csv`
 
 10 个字段，顺序固定，第一行是表头：
