@@ -284,13 +284,18 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     data_dir = Path(os.environ.get("XIST_KB_DATA") or "data_local_lowercase")
     gold = data_dir / "gold" if (data_dir / "gold").is_dir() else data_dir
-    index = data_dir / "index" / "xist.duckdb"
-    if not index.exists():
-        raise SystemExit(f"index database not found at {index}")
 
-    conn = duckdb.connect(str(index), read_only=True)
-    report = build(conn, gold / "species_fill.parquet")
-    conn.close()
+    # Through the query layer rather than the index file: when the index has not
+    # been built yet (or was deleted to be rebuilt), `connect` falls back to views
+    # over the Parquet files, and this build still runs. Requiring the index here
+    # created a cycle -- the index needs this table, this table needed the index.
+    from xist_kb.query.engine import connect
+
+    conn = connect(gold_dir=gold, index_file=data_dir / "index" / "xist.duckdb")
+    try:
+        report = build(conn, gold / "species_fill.parquet")
+    finally:
+        conn.close()
     print(json.dumps(report, indent=1, ensure_ascii=False))
 
 

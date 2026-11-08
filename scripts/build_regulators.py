@@ -194,13 +194,17 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     data_dir = Path(os.environ.get("XIST_KB_DATA") or "data_local_lowercase")
     gold = data_dir / "gold" if (data_dir / "gold").is_dir() else data_dir
-    index = data_dir / "index" / "xist.duckdb"
-    if not index.exists():
-        raise SystemExit(f"index database not found at {index}")
 
-    conn = duckdb.connect(str(index), read_only=True)
-    report = build(conn, gold / "regulators.parquet")
-    conn.close()
+    # Through the query layer so a missing index falls back to Parquet views:
+    # requiring the index here would make the rebuild order circular, since the
+    # index is built from the parquet this function writes.
+    from xist_kb.query.engine import connect
+
+    conn = connect(gold_dir=gold, index_file=data_dir / "index" / "xist.duckdb")
+    try:
+        report = build(conn, gold / "regulators.parquet")
+    finally:
+        conn.close()
     print(json.dumps(report, indent=1, ensure_ascii=False))
 
 
