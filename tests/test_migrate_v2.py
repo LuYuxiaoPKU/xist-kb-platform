@@ -348,3 +348,103 @@ class TestReport:
         # iter_annotations logs a warning rather than counting; the migration
         # still completes with the good file present.
         assert stats.papers_read == 3
+
+
+class TestPaperIdCase:
+    """V2 spells the same paper three ways; the migration picks one.
+
+    Measured on the full corpus: 815 claim paper_ids are absent from the
+    registry until both sides are lowercased, and 696 text lookups start
+    working. No two papers differ only by case, so nothing merges.
+    """
+
+    @pytest.fixture
+    def mixed_case_tree(self, tmp_path: Path) -> Path:
+        root = tmp_path / "v2"
+        for sub in ("metadata", "notes/json", "notes/claims", "papers/text", "papers/pdf"):
+            (root / sub).mkdir(parents=True)
+
+        with (root / "metadata" / "papers.csv").open("w", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(
+                ["paper_id", "title", "year", "journal", "doi", "pmid",
+                 "species", "taxonomic_group", "first_author", "status"]
+            )
+            writer.writerow(
+                ["ADiociaiuti2019_angioma", "A paper", "2019", "J", "", "",
+                 "", "", "ADiociaiuti", "ingested"]
+            )
+
+        # text file uses different casing from the registry entry
+        (root / "papers" / "text" / "adiociaiuti2019_angioma.txt").write_text(
+            "body text", encoding="utf-8"
+        )
+        (root / "papers" / "pdf" / "ADiociaiuti2019_angioma.pdf").write_bytes(b"%PDF")
+        (root / "notes" / "json" / "ADiociaiuti2019_angioma.json").write_text(
+            json.dumps({"claims": []}), encoding="utf-8"
+        )
+
+        header = ["paper_id", "claim", "topic", "evidence", "evidence_type", "directness",
+                  "section", "paragraph", "figure_or_table", "species", "cell_type",
+                  "confidence", "caveat"]
+        with (root / "notes" / "claims" / "adiociaiuti2019_angioma_claims.csv").open(
+            "w", encoding="utf-8", newline=""
+        ) as fh:
+            writer = csv.writer(fh)
+            writer.writerow(header)
+            # the claim row is lowercase while the registry is mixed case
+            writer.writerow(["adiociaiuti2019_angioma", "Xist coats X", "xci", "",
+                             "direct_experimental", "direct", "results", "", "", "",
+                             "", "high", ""])
+
+        # check() requires the side tables to exist; these tests only care
+        # about papers/claims, so the schema is created empty.
+        conn = sqlite3.connect(root / "xist_knowledge.db")
+        conn.executescript(
+            """
+            CREATE TABLE papers (paper_id TEXT PRIMARY KEY);
+            CREATE TABLE claims (id INTEGER PRIMARY KEY, paper_id TEXT);
+            CREATE TABLE regulations (id INTEGER PRIMARY KEY, paper_id TEXT);
+            CREATE TABLE interactors (id INTEGER PRIMARY KEY, paper_id TEXT);
+            CREATE TABLE xci_status (id INTEGER PRIMARY KEY, paper_id TEXT);
+            CREATE TABLE species_xist (id INTEGER PRIMARY KEY, paper_id TEXT);
+            """
+        )
+        conn.commit()
+        conn.close()
+        return root
+
+    def test_paper_id_is_lowercased(self, mixed_case_tree):
+        Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
+        rows = pq.read_table(mixed_case_tree / "o" / "papers.parquet").to_pylist()
+        assert [r["paper_id"] for r in rows] == ["adiociaiuti2019_angioma"]
+
+    def test_text_file_found_across_case(self, mixed_case_tree):
+        Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
+        rows = pq.read_table(mixed_case_tree / "o" / "papers.parquet").to_pylist()
+        assert rows[0]["has_text"] is True
+        assert rows[0]["has_pdf"] is True
+        assert rows[0]["has_annotation"] is True
+
+    def test_claim_joins_paper_after_lowercasing(self, mixed_case_tree):
+        Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
+        paper_ids = {
+            r["paper_id"]
+            for r in pq.read_table(mixed_case_tree / "o" / "papers.parquet").to_pylist()
+        }
+        claims = pq.read_table(mixed_case_tree / "o" / "claims.parquet").to_pylist()
+        assert claims[0]["paper_id"] == "adiociaiuti2019_angioma"
+        assert claims[0]["paper_id"] in paper_ids
+
+    def test_map_records_original_file_names(self, mixed_case_tree):
+        Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
+        rows = pq.read_table(mixed_case_tree / "o" / "paper_id_map.parquet").to_pylist()
+        entry = next(r for r in rows if r["paper_id"] == "adiociaiuti2019_angioma")
+        assert entry["text_file"] == "adiociaiuti2019_angioma"
+        assert entry["pdf_file"] == "ADiociaiuti2019_angioma"
+        assert entry["claims_file"] == "adiociaiuti2019_angioma"
+
+    def test_lowercase_counts_reported(self, mixed_case_tree):
+        stats = Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
+        assert stats.paper_id_lowercased == 1
+        assert stats.claim_paper_id_lowercased == 0

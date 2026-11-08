@@ -199,7 +199,8 @@ def context(
         ).fetchall()
 
     found_id, paper_id, quote, sec = rows[0]
-    text = ctx.TextStore(TEXT_DIR).get(paper_id)
+    store = ctx.TextStore.from_map(TEXT_DIR, conn)
+    text = store.get(paper_id)
     result = ctx.build_context(found_id, paper_id, quote, sec, text)
 
     console.print(f"[bold]{paper_id}[/bold] · annotation section: {sec or '-'}")

@@ -159,14 +159,69 @@ class V2Source:
 
     # -- corpora ---------------------------------------------------------
 
+    def _stems(self, directory: Path, suffix: str) -> set[str]:
+        """Stems lowercased, because the canonical paper_id is lowercase.
+
+        On Windows `glob` also matches case-insensitively, which hides the fact
+        that 761 text files do not match their paper_id exactly; on the lab
+        server those papers would silently have no full text. Comparing on
+        lowercased stems makes both platforms agree.
+        """
+        if not directory.is_dir():
+            return set()
+        return {p.stem.lower() for p in directory.iterdir() if p.suffix.lower() == suffix}
+
     def text_ids(self) -> set[str]:
-        return {p.stem for p in self.text_dir.glob("*.txt")}
+        return self._stems(self.text_dir, ".txt")
 
     def pdf_ids(self) -> set[str]:
-        return {p.stem for p in self.pdf_dir.glob("*.pdf")}
+        return self._stems(self.pdf_dir, ".pdf")
 
     def annotation_ids(self) -> set[str]:
-        return {p.stem for p in self.json_dir.glob("*.json")}
+        return self._stems(self.json_dir, ".json")
 
     def claim_ids(self) -> set[str]:
-        return {p.name.removesuffix("_claims.csv") for p in self.claims_dir.glob("*_claims.csv")}
+        if not self.claims_dir.is_dir():
+            return set()
+        return {
+            p.name.removesuffix("_claims.csv").lower()
+            for p in self.claims_dir.iterdir()
+            if p.name.endswith("_claims.csv")
+        }
+
+    def file_index(self) -> dict[str, dict[str, str | None]]:
+        """Lowcased paper_id -> the on-disk stem of each file kind.
+
+        Written to `silver/paper_id_map.parquet`. Files keep their original
+        names: 881 JSON, 864 text and 1,891 PDF stems contain uppercase, and
+        renaming them would be a 3,600-file operation that gains nothing once
+        every lookup goes through this table.
+        """
+        index: dict[str, dict[str, str | None]] = {}
+
+        def record(directory: Path, match: str, key: str) -> None:
+            """Record files under `key`. `match` is a suffix; for claims it is
+            the full `_claims.csv` ending, since `Path.suffix` is only `.csv`."""
+            if not directory.is_dir():
+                return
+            for path in directory.iterdir():
+                if not path.name.lower().endswith(match):
+                    continue
+                stem = path.stem.removesuffix("_claims") if key == "claims_file" else path.stem
+                entry = index.setdefault(
+                    stem.lower(),
+                    {
+                        "paper_id": stem.lower(),
+                        "json_file": None,
+                        "text_file": None,
+                        "pdf_file": None,
+                        "claims_file": None,
+                    },
+                )
+                entry[key] = stem
+
+        record(self.json_dir, ".json", "json_file")
+        record(self.text_dir, ".txt", "text_file")
+        record(self.pdf_dir, ".pdf", "pdf_file")
+        record(self.claims_dir, "_claims.csv", "claims_file")
+        return index

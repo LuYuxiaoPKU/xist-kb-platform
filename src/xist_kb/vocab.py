@@ -369,3 +369,29 @@ def normalize_year(raw: object) -> int | None:
         return None
     match = _YEAR.search(text)
     return int(match.group(1)) if match else None
+
+
+# --------------------------------------------------------------------------
+# Paper ids
+# --------------------------------------------------------------------------
+
+
+def normalize_paper_id(raw: object) -> str:
+    """Lowercase a paper id to the canonical form used across the KB.
+
+    V2 has three spellings of the same paper: the registry's original case,
+    the claim CSV's copy, and whatever case the file on disk happens to use.
+    Measured on the full corpus: 1,822 of 296,835 registry ids contain an
+    uppercase letter, 867 claim rows use a case that has no matching text
+    file, and 815 claim paper_ids are absent from the registry entirely.
+
+    Lowercasing resolves all 815 orphans (they turn out to be the same papers
+    spelled differently) and gains 696 text-file lookups, with zero collisions:
+    no two registry ids, and no two claim paper_ids, differ only by case. The
+    ids that *do* differ only by case across the two sources are the same paper
+    recorded twice, not two papers.
+
+    Files on disk keep their original names; lookups go through
+    `silver/paper_id_map.parquet` instead of renaming 2,600+ files.
+    """
+    return str(raw or "").strip().lower()

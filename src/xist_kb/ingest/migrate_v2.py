@@ -42,6 +42,7 @@ from xist_kb.vocab import (
     SECTION_VALUES,
     normalize_doi,
     normalize_enum,
+    normalize_paper_id,
     normalize_species_list,
     normalize_topic,
     normalize_year,
@@ -173,6 +174,19 @@ SPECIES_XIST_SCHEMA = pa.schema(
     ]
 )
 
+# Canonical paper_id -> the on-disk stem of each file kind. Files keep their
+# original case; every lookup goes through this table instead of `path.exists()`,
+# which on Windows returns true for names that fail on the Linux server.
+PAPER_ID_MAP_SCHEMA = pa.schema(
+    [
+        ("paper_id", pa.string()),
+        ("json_file", pa.string()),
+        ("text_file", pa.string()),
+        ("pdf_file", pa.string()),
+        ("claims_file", pa.string()),
+    ]
+)
+
 
 # --------------------------------------------------------------------------
 # Helpers
@@ -223,6 +237,8 @@ class MigrationStats:
     species_empty: int = 0
     quote_present: int = 0
     quote_missing: int = 0
+    paper_id_lowercased: int = 0
+    claim_paper_id_lowercased: int = 0
     papers_without_annotation: int = 0
     annotations_without_paper: int = 0
     claims_without_paper: int = 0
@@ -247,6 +263,8 @@ class MigrationStats:
                 "year_repaired": self.year_repaired,
                 "doi_normalized": self.doi_normalized,
                 "species_parsed": self.species_parsed,
+                "paper_id_lowercased": self.paper_id_lowercased,
+                "claim_paper_id_lowercased": self.claim_paper_id_lowercased,
             },
             "gaps": {
                 "year_missing": self.year_missing,
@@ -289,9 +307,11 @@ class Migration:
         rows: list[dict] = []
         for raw in self.source.iter_papers():
             self.stats.papers_read += 1
-            paper_id = str(raw["paper_id"]).strip()
+            paper_id = normalize_paper_id(raw["paper_id"])
             if not paper_id:
                 continue
+            if paper_id != str(raw["paper_id"]).strip():
+                self.stats.paper_id_lowercased += 1
 
             raw_year = raw.get("year")
             year = normalize_year(raw_year)
@@ -373,10 +393,12 @@ class Migration:
 
         for raw in self.source.iter_claim_rows():
             self.stats.claims_read += 1
-            paper_id = str(raw.get("paper_id") or "").strip()
+            paper_id = normalize_paper_id(raw.get("paper_id"))
             claim_text = (raw.get("claim") or "").strip()
             if not paper_id or not claim_text:
                 continue
+            if paper_id != str(raw.get("paper_id") or "").strip():
+                self.stats.claim_paper_id_lowercased += 1
 
             raw_topic = raw.get("topic")
             self.stats.topic_before[str(raw_topic)] += 1
@@ -474,7 +496,7 @@ class Migration:
                 continue
             rows.append(
                 {
-                    "paper_id": raw.get("paper_id"),
+                    "paper_id": normalize_paper_id(raw.get("paper_id")),
                     "protein": protein,
                     "xist_domain": clean_text(raw.get("xist_domain")),
                     "method": clean_text(raw.get("method")),
@@ -497,7 +519,7 @@ class Migration:
                 continue
             rows.append(
                 {
-                    "paper_id": raw.get("paper_id"),
+                    "paper_id": normalize_paper_id(raw.get("paper_id")),
                     "regulator": regulator,
                     "target": clean_text(raw.get("target")) or "XIST",
                     "direction": clean_text(raw.get("direction")),
@@ -521,7 +543,7 @@ class Migration:
             marks = clean_text(raw.get("chromatin_marks"))
             rows.append(
                 {
-                    "paper_id": raw.get("paper_id"),
+                    "paper_id": normalize_paper_id(raw.get("paper_id")),
                     "species": normalize_species_list(raw.get("species")),
                     "cell_type": clean_text(raw.get("cell_type")),
                     "developmental_stage": clean_text(raw.get("developmental_stage")),
@@ -547,7 +569,7 @@ class Migration:
                 reported = None
             rows.append(
                 {
-                    "paper_id": raw.get("paper_id"),
+                    "paper_id": normalize_paper_id(raw.get("paper_id")),
                     "species": clean_text(raw.get("species")) or "",
                     "taxonomic_group": clean_text(raw.get("taxonomic_group")),
                     "xist_reported": reported,
@@ -559,6 +581,19 @@ class Migration:
             )
         self.stats.table_rows["species_xist"] = len(rows)
         return rows
+
+    # -- orchestrator helpers --------------------------------------------
+
+    def build_paper_id_map(self) -> list[dict]:
+        """Canonical id -> on-disk file stems, for every file in the corpus.
+
+        The map is keyed by the lowercased stem so a paper whose registry entry
+        is `ADiociaiuti2019_angioma` and whose text file is
+        `adiociaiuti2019_angioma.txt` resolves without renaming either.
+        """
+        rows = self.source.file_index()
+        self.stats.table_rows["paper_id_map"] = len(rows)
+        return sorted(rows.values(), key=lambda r: r["paper_id"])
 
     # -- orchestration ---------------------------------------------------
 
@@ -587,6 +622,7 @@ class Migration:
         self.write("regulations", self.build_regulations(), REGULATIONS_SCHEMA)
         self.write("xci_status", self.build_xci_status(), XCI_STATUS_SCHEMA)
         self.write("species_xist", self.build_species_xist(), SPECIES_XIST_SCHEMA)
+        self.write("paper_id_map", self.build_paper_id_map(), PAPER_ID_MAP_SCHEMA)
 
         self.stats.table_rows["papers"] = len(papers)
         self.stats.table_rows["claims"] = len(claims)

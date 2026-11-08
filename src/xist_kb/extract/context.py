@@ -21,6 +21,8 @@ from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
+import duckdb
+
 from xist_kb.extract.sections import CLAIM_SECTIONS, find_sections
 from xist_kb.models_context import (
     ClaimContext,
@@ -84,14 +86,30 @@ def normalize_quote(quote: str) -> str:
 class TextStore:
     """Paper text by lowercased stem.
 
-    On the lab server the filesystem is case sensitive and 761 text files do
-    not match their paper_id exactly; building the index case-insensitively is
-    what makes those papers readable at all.
+    On the lab server the filesystem is case sensitive and 864 text files
+    contain uppercase in their names, so a naive `<paper_id>.txt` lookup fails
+    for those papers there while working on Windows. Indexing by lowercased
+    stem is what makes the two platforms agree. When a `paper_id_map` table is
+    available (`from_map`), the exact on-disk name comes from there instead.
     """
 
-    def __init__(self, text_dir: Path | str):
+    def __init__(self, text_dir: Path | str, names: dict[str, str] | None = None):
         self.text_dir = Path(text_dir)
+        self._names = names  # canonical id -> on-disk stem, when known
         self._index: dict[str, Path] | None = None
+
+    @classmethod
+    def from_map(
+        cls, text_dir: Path | str, conn: duckdb.DuckDBPyConnection
+    ) -> TextStore:
+        """Build a store whose file names come from gold/paper_id_map.parquet."""
+        try:
+            rows = conn.execute(
+                "SELECT paper_id, text_file FROM paper_id_map WHERE text_file IS NOT NULL"
+            ).fetchall()
+        except duckdb.CatalogException:
+            return cls(text_dir)
+        return cls(text_dir, {pid: stem for pid, stem in rows})
 
     def _build(self) -> dict[str, Path]:
         index: dict[str, Path] = {}
@@ -102,9 +120,18 @@ class TextStore:
         return index
 
     def get(self, paper_id: str) -> str | None:
-        if self._index is None:
-            self._index = self._build()
-        path = self._index.get(paper_id.lower())
+        key = paper_id.lower()
+        path: Path | None = None
+        if self._names is not None:
+            stem = self._names.get(key)
+            if stem is not None:
+                path = self.text_dir / f"{stem}.txt"
+                if not path.exists():
+                    path = None
+        if path is None:
+            if self._index is None:
+                self._index = self._build()
+            path = self._index.get(key)
         if path is None:
             return None
         try:
