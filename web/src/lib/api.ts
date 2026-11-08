@@ -74,6 +74,7 @@ export interface Claim {
   journal?: string | null
   doi?: string | null
   tier?: string | null
+  scope?: string | null
   annotation_method?: string | null
   annotation?: Annotation | null
   span_count?: number | null
@@ -151,6 +152,8 @@ export interface Stats {
   species: { species: string; count: number }[]
   tables: Record<string, number>
   tiers: { tier: string; count: number }[]
+  scopes: { scope: string; label: string; count: number }[]
+  scope_claims: { scope: string; label: string; count: number }[]
 }
 
 export interface AskResult {
@@ -176,6 +179,7 @@ export interface ClaimFilters {
   topic?: string[]
   confidence?: string[]
   tier?: string[]
+  scope?: string[]
   species?: string[]
   year_from?: number
   year_to?: number
@@ -221,6 +225,7 @@ export function exportUrl(filters: ClaimFilters, format: 'csv' | 'json'): string
   const params: Record<string, string | number | string[]> = { format }
   if (filters.topic?.length) params.topic = filters.topic
   if (filters.tier?.length) params.tier = filters.tier
+  if (filters.scope?.length) params.scope = filters.scope
   if (filters.species?.length) params.species = filters.species
   if (filters.text) params.text = filters.text
   const key = apiKey()

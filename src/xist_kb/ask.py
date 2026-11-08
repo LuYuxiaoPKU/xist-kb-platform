@@ -49,18 +49,29 @@ def retrieve(conn: duckdb.DuckDBPyConnection, question: str) -> Evidence:
 
     The question is searched whole first, then term by term. A question asked in
     Chinese over an English corpus matches nothing as a phrase -- measured: "A-repeat
-    在 Xist 沉默中起什么作用？" returned zero claims -- but the Latin technical terms
+    in Xist silencing" returned zero claims -- but the Latin technical terms
     inside it ("A-repeat", "Xist") are exactly what the index is good at.
+
+    Retrieval is restricted to papers whose full text names Xist or discusses X
+    inactivation: a claim about MALAT1 is not evidence about XIST, and a model
+    handed it will cite it as though it were. The in-scope vocabulary is wider
+    than the literal gene name because Drosophila MSL work and older
+    X-inactivation papers never write "Xist".
     """
+    in_scope = ["xist", "phenomenon_only"]
     claims, _ = q.search_claims(
         conn,
-        q.ClaimFilter(text=question, limit=MAX_CLAIMS, tiers=["P1", "P2", "P3", "S"]),
+        q.ClaimFilter(
+            text=question, limit=MAX_CLAIMS, tiers=["P1", "P2", "P3", "S"], scopes=in_scope
+        ),
     )
     if not claims:
         for term in _search_terms(question):
             claims, _ = q.search_claims(
                 conn,
-                q.ClaimFilter(text=term, limit=MAX_CLAIMS, tiers=["P1", "P2", "P3", "S"]),
+                q.ClaimFilter(
+                    text=term, limit=MAX_CLAIMS, tiers=["P1", "P2", "P3", "S"], scopes=in_scope
+                ),
             )
             if claims:
                 break

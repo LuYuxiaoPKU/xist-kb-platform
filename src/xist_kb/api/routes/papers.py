@@ -13,6 +13,7 @@ from xist_kb import ask as asker
 from xist_kb.api.deps import resources
 from xist_kb.api.serialize import clean_rows
 from xist_kb.query import search as q
+from xist_kb.query.paper_scope import IN_SCOPE
 from xist_kb.query.aggregate import visualizing_payload
 
 router = APIRouter(prefix="/api", tags=["papers"])
@@ -190,15 +191,22 @@ def export(
     topic: Annotated[list[str] | None, Query()] = None,
     species: Annotated[list[str] | None, Query()] = None,
     tier: Annotated[list[str] | None, Query()] = None,
+    scope: Annotated[list[str] | None, Query()] = None,
     text: str | None = None,
     limit: Annotated[int, Query(ge=1, le=50_000)] = 5_000,
 ) -> StreamingResponse:
-    """Export matching claims. Capped at 50k rows by default."""
+    """Export matching claims. Capped at 50k rows by default.
+
+    Scope follows the same default as `/api/claims`: an export that silently
+    included the 16% out-of-scope claims while the page showed only the
+    in-scope ones would disagree with what the reader saw on screen.
+    """
     res = resources()
     f = q.ClaimFilter(
         topics=topic or [],
         species=species or [],
         tiers=tier or [],
+        scopes=scope if scope else list(IN_SCOPE),
         text=text,
         limit=limit,
         offset=0,

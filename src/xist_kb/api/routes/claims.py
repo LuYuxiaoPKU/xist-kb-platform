@@ -12,6 +12,7 @@ from xist_kb.api.serialize import clean_row, clean_rows
 from xist_kb.extract.context import build_context
 from xist_kb.paths import SILVER_DIR
 from xist_kb.query import search as q
+from xist_kb.query.paper_scope import IN_SCOPE
 
 router = APIRouter(prefix="/api", tags=["claims"])
 
@@ -27,12 +28,22 @@ def list_claims(
     confidence: Annotated[list[str] | None, Query()] = None,
     evidence_type: Annotated[list[str] | None, Query()] = None,
     tier: Annotated[list[str] | None, Query()] = None,
+    scope: Annotated[list[str] | None, Query()] = None,
     year_from: int | None = None,
     year_to: int | None = None,
     text: str | None = None,
     limit: Annotated[int, Query(ge=1, le=500)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> dict:
+    """Search claims.
+
+    Scope defaults to the papers that are about XIST/XCI. Omitting the parameter
+    means "the knowledge base as it should be read", not "every row in the
+    table": 16% of claims come from papers whose full text never mentions the
+    subject, and a default that mixes them in would misrepresent the corpus on
+    every unfiltered search. Passing `scope=out_of_scope` (or all four values)
+    brings them back, so nothing is hidden from a reader who asks.
+    """
     res = resources()
     f = q.ClaimFilter(
         topics=topic or [],
@@ -40,6 +51,7 @@ def list_claims(
         confidence=confidence or [],
         evidence_types=evidence_type or [],
         tiers=tier or [],
+        scopes=scope if scope else list(IN_SCOPE),
         year_from=year_from,
         year_to=year_to,
         text=text,
@@ -49,7 +61,27 @@ def list_claims(
     with res.lock:
         rows, total = q.search_claims(res.conn, f)
         _attach_tiers(res.conn, rows)
+        _attach_scope(res.conn, rows)
     return {"total": total, "limit": limit, "offset": offset, "items": clean_rows(rows)}
+
+
+def _attach_scope(conn, rows: list[dict]) -> None:
+    """Join the paper's scope onto each row; absent without paper_scope."""
+    if not rows:
+        return
+    paper_ids = list({r["paper_id"] for r in rows})
+    try:
+        pairs = conn.execute(
+            "SELECT paper_id, scope FROM paper_scope WHERE paper_id IN ("
+            + ", ".join("?" for _ in paper_ids)
+            + ")",
+            paper_ids,
+        ).fetchall()
+    except Exception:
+        return
+    scopes = dict(pairs)
+    for row in rows:
+        row["scope"] = scopes.get(row["paper_id"])
 
 
 def _attach_tiers(conn, rows: list[dict]) -> None:

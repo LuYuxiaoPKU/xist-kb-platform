@@ -13,6 +13,7 @@ from xist_kb.ingest.migrate_v2 import (
 )
 from xist_kb.query import search
 from xist_kb.query.engine import connect, describe
+from xist_kb.query.paper_scope import PAPER_SCOPE_SCHEMA
 
 
 @pytest.fixture
@@ -151,6 +152,29 @@ def gold(tmp_path):
         },
     ]
 
+    # p1 is a real Xist paper; p2 is a passing mention whose text never names
+    # the gene. Kept deliberately small so the contrast fits in an assertion.
+    paper_scope = [
+        {
+            "paper_id": "p1",
+            "scope": "xist",
+            "xist_mentions": 12,
+            "phenomenon_mentions": 3,
+            "text_chars": 4000,
+            "xist_per_10k": 30.0,
+            "reason": "full text names Xist",
+        },
+        {
+            "paper_id": "p2",
+            "scope": "out_of_scope",
+            "xist_mentions": 0,
+            "phenomenon_mentions": 0,
+            "text_chars": 3000,
+            "xist_per_10k": 0.0,
+            "reason": "full text contains no XIST/XCI vocabulary",
+        },
+    ]
+
     empty = {
         "interactors.parquet": pa.schema(
             [
@@ -213,9 +237,28 @@ def gold(tmp_path):
     pq.write_table(
         pa.Table.from_pylist(provenance, PROVENANCE_SCHEMA), out / "provenance.parquet"
     )
+    pq.write_table(
+        pa.Table.from_pylist(paper_scope, PAPER_SCOPE_SCHEMA), out / "paper_scope.parquet"
+    )
     for name, schema in empty.items():
         pq.write_table(schema.empty_table(), out / name)
     return out
+
+
+@pytest.fixture
+def gold_without_scope(gold, tmp_path):
+    """The same Gold layer minus paper_scope, as an older build would be.
+
+    A scope-filtered query must return nothing rather than raise: the filter
+    cannot be honoured, and an error would take down every caller that passes
+    the in-scope default.
+    """
+    lean = tmp_path / "gold_lean"
+    lean.mkdir()
+    for path in gold.iterdir():
+        if path.name != "paper_scope.parquet":
+            (lean / path.name).write_bytes(path.read_bytes())
+    return lean
 
 
 class TestEngine:
@@ -331,6 +374,55 @@ class TestStats:
         topics = search.stats(conn)["topics"]
         counts = [t["count"] for t in topics]
         assert counts == sorted(counts, reverse=True)
+
+
+class TestScopeFilter:
+    """Scope is per paper; a claim inherits its paper's judgement."""
+
+    def test_in_scope_excludes_out_of_scope_paper(self, gold):
+        conn = connect(gold)
+        _rows, total = search.search_claims(
+            conn, search.ClaimFilter(scopes=["xist", "phenomenon_only"])
+        )
+        # p1's two claims survive, p2's one does not.
+        assert total == 2
+
+    def test_out_of_scope_only(self, gold):
+        conn = connect(gold)
+        _rows, total = search.search_claims(conn, search.ClaimFilter(scopes=["out_of_scope"]))
+        assert total == 1
+
+    def test_no_scope_filter_returns_everything(self, gold):
+        conn = connect(gold)
+        _rows, total = search.search_claims(conn, search.ClaimFilter())
+        assert total == 3
+
+    def test_unknown_scope_matches_nothing_when_absent(self, gold):
+        conn = connect(gold)
+        _rows, total = search.search_claims(conn, search.ClaimFilter(scopes=["unknown"]))
+        assert total == 0
+
+    def test_scope_filter_without_table_returns_nothing_not_error(self, gold_without_scope):
+        # An older Gold layer has no paper_scope. The filter cannot be honoured;
+        # returning no rows keeps every scope-defaulted caller working.
+        conn = connect(gold_without_scope)
+        rows, total = search.search_claims(conn, search.ClaimFilter(scopes=["xist"]))
+        assert total == 0
+        assert rows == []
+
+    def test_stats_report_scope_counts(self, gold):
+        conn = connect(gold)
+        s = search.stats(conn)
+        by_claims = {row["scope"]: row["count"] for row in s["scope_claims"]}
+        assert by_claims["xist"] == 2
+        assert by_claims["out_of_scope"] == 1
+        assert all("label" in row for row in s["scopes"])
+
+    def test_stats_without_scope_table_are_empty_not_fatal(self, gold_without_scope):
+        conn = connect(gold_without_scope)
+        s = search.stats(conn)
+        assert s["scopes"] == []
+        assert s["scope_claims"] == []
 
 
 class TestPaperDetail:

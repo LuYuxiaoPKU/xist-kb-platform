@@ -12,6 +12,9 @@ from dataclasses import dataclass, field
 
 import duckdb
 
+from xist_kb.query.engine import has_table
+from xist_kb.query.paper_scope import SCOPE_LABELS
+
 
 @dataclass
 class ClaimFilter:
@@ -22,6 +25,7 @@ class ClaimFilter:
     confidence: list[str] = field(default_factory=list)
     evidence_types: list[str] = field(default_factory=list)
     tiers: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list)
     text: str | None = None
     limit: int = 50
     offset: int = 0
@@ -141,6 +145,22 @@ def search_claims(conn: duckdb.DuckDBPyConnection, f: ClaimFilter) -> tuple[list
         params.append(f.year_to)
     if clause := _like_clause(f.text, ["c.claim", "c.quote"], params):
         where.append(clause)
+    if f.scopes:
+        # Scope is a property of the paper, not the claim: a claim from a paper
+        # whose full text never mentions Xist is about something else, however
+        # it is labelled. When paper_scope has not been built the filter cannot
+        # be satisfied, and the honest answer is no rows -- but returning an
+        # error would take down every scope-defaulted query on an older Gold
+        # layer, so the absence is checked here rather than raised.
+        if has_table(conn, "paper_scope"):
+            where.append(
+                "c.paper_id IN (SELECT paper_id FROM paper_scope WHERE scope IN ("
+                + ", ".join("?" for _ in f.scopes)
+                + "))"
+            )
+            params.extend(f.scopes)
+        else:
+            where.append("FALSE")
 
     where_sql = (" WHERE " + " AND ".join(where)) if where else ""
     base = f"FROM claims c LEFT JOIN papers p USING (paper_id){where_sql}"
@@ -217,13 +237,48 @@ def stats(conn: duckdb.DuckDBPyConnection) -> dict:
         GROUP BY s ORDER BY n DESC LIMIT 25
         """
     ).fetchall()
+    scope_rows, scope_claims = _scope_stats(conn)
     return {
         "topics": [{"topic": t, "count": n} for t, n in topic_rows],
         "statuses": [{"status": s, "count": n} for s, n in status_rows],
         "confidence": [{"confidence": c, "count": n} for c, n in confidence_rows],
         "years": [{"year": y, "count": n} for y, n in year_rows],
         "species": [{"species": s, "count": n} for s, n in species_rows],
+        "scopes": scope_rows,
+        "scope_claims": scope_claims,
     }
+
+
+def _scope_stats(conn: duckdb.DuckDBPyConnection) -> tuple[list[dict], list[dict]]:
+    """Paper counts and claim counts per scope.
+
+    Claim counts are attributed through the claim's paper, so a paper-level
+    judgement becomes a claim-level one without duplicating the decision into
+    every claim row. Returns empty lists when paper_scope has not been built --
+    the overview page then shows no scope panel rather than zeros.
+    """
+    try:
+        paper_rows = conn.execute(
+            "SELECT scope, count(*) FROM paper_scope GROUP BY 1 ORDER BY 2 DESC"
+        ).fetchall()
+        claim_rows = conn.execute(
+            """
+            SELECT s.scope, count(*) AS n
+            FROM claims c JOIN paper_scope s USING (paper_id)
+            GROUP BY 1 ORDER BY 2 DESC
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        return [], []
+    claim_map = {scope: n for scope, n in claim_rows}
+    papers = [
+        {"scope": s, "label": SCOPE_LABELS.get(s, s), "count": n} for s, n in paper_rows
+    ]
+    claims = [
+        {"scope": s, "label": SCOPE_LABELS.get(s, s), "count": claim_map.get(s, 0)}
+        for s, _ in paper_rows
+    ]
+    return papers, claims
 
 
 def get_paper(conn: duckdb.DuckDBPyConnection, paper_id: str) -> dict | None:

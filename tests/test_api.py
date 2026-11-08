@@ -185,6 +185,31 @@ def client(tmp_path, monkeypatch):
     pq.write_table(
         pa.Table.from_pylist(tiers, tier_schema), gold / "claim_provenance.parquet"
     )
+
+    # Every fixture paper is in scope: these tests are about the API surface,
+    # and a scope fixture that excluded some of them would make every claim
+    # assertion fail for a reason unrelated to what it is testing.
+    from xist_kb.query.paper_scope import PAPER_SCOPE_SCHEMA
+
+    paper_ids = {c["paper_id"] for c in claims} | {p["paper_id"] for p in papers}
+    pq.write_table(
+        pa.Table.from_pylist(
+            [
+                {
+                    "paper_id": pid,
+                    "scope": "xist",
+                    "xist_mentions": 10,
+                    "phenomenon_mentions": 0,
+                    "text_chars": 4000,
+                    "xist_per_10k": 25.0,
+                    "reason": "full text names Xist",
+                }
+                for pid in sorted(paper_ids)
+            ],
+            PAPER_SCOPE_SCHEMA,
+        ),
+        gold / "paper_scope.parquet",
+    )
     pq.write_table(
         pa.Table.from_pylist(
             chunks,

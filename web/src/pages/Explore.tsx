@@ -30,10 +30,62 @@ export function ExplorePage() {
     .filter((t) => ['P1', 'P2', 'P3'].includes(t.tier))
     .reduce((sum, t) => sum + t.count, 0)
 
+  const claimScopeTotal = stats.scope_claims.reduce((sum, s) => sum + s.count, 0) || 1
+  const outScope = stats.scope_claims.find((s) => s.scope === 'out_of_scope')
+
   return (
     <>
       <h1 className="page-title">知识库概览</h1>
       <p className="page-sub">文献规模、claim 分布与溯源可信度。</p>
+
+      {stats.scope_claims.length > 0 && (
+        <section style={{ marginBottom: 26 }}>
+          <p className="side-title">这些 claim 是否在讲 XIST/XCI</p>
+          <div className="claim-list">
+            {stats.scope_claims.map((s) => {
+              const pct = (100 * s.count) / claimScopeTotal
+              return (
+                <div key={s.scope} style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                  <span style={{ width: 240, flexShrink: 0 }} className="meta">
+                    {s.label}
+                  </span>
+                  <span style={{ flex: 1, height: 8, background: 'var(--bg-sunk)', borderRadius: 4 }}>
+                    <span
+                      style={{
+                        display: 'block',
+                        width: `${pct}%`,
+                        height: '100%',
+                        borderRadius: 4,
+                        background:
+                          s.scope === 'out_of_scope'
+                            ? 'var(--warn)'
+                            : s.scope === 'unknown'
+                              ? 'var(--border)'
+                              : 'var(--accent)',
+                      }}
+                    />
+                  </span>
+                  <span className="meta" style={{ width: 150, textAlign: 'right' }}>
+                    {s.count.toLocaleString()} · {pct.toFixed(1)}%
+                  </span>
+                </div>
+              )
+            })}
+          </div>
+          <p className="meta" style={{ marginTop: 11 }}>
+            判定依据是论文全文，不是单条 claim：全文从不提 Xist 的论文，其 claim 无论怎么标注都
+            不会是在讲这个主题。
+            {outScope && outScope.count > 0 && (
+              <>
+                {' '}
+                当前有 <b>{outScope.count.toLocaleString()}</b> 条 claim 来自这类论文
+                （{((100 * outScope.count) / claimScopeTotal).toFixed(1)}%），
+                检索与问答默认排除它们。
+              </>
+            )}
+          </p>
+        </section>
+      )}
 
       <section style={{ marginBottom: 26 }}>
         <p className="side-title">溯源能到什么程度</p>

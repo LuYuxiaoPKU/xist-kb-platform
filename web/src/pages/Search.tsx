@@ -15,11 +15,26 @@ const TIER_CHOICES = [
   { value: 'C_no_section', label: 'C 未定位' },
 ] as const
 
+// Defaults to in-scope. A claim from a paper whose full text never mentions
+// Xist is about something else, and mixing those into every search would make
+// the results look larger and less relevant than the corpus really is. The
+// option to see them stays, because hiding rows without saying so would be
+// worse than the noise. The server applies the same default when no scope
+// parameter is sent, so the two cannot drift apart.
+const SCOPE_CHOICES = [
+  { value: 'in', label: '仅 XIST/XCI 相关（默认）' },
+  { value: 'all', label: '全部论文（含背景性）' },
+  { value: 'out', label: '只看范围外论文' },
+] as const
+
+const ALL_SCOPES = ['xist', 'phenomenon_only', 'out_of_scope', 'unknown']
+
 /** Search and browse claims with the tier badge always visible. */
 export function SearchPage() {
   const [text, setText] = useState('')
   const [tier, setTier] = useState('')
   const [topic, setTopic] = useState('')
+  const [scopeMode, setScopeMode] = useState<string>('in')
   const [yearFrom, setYearFrom] = useState('')
   const [yearTo, setYearTo] = useState('')
   const [page, setPage] = useState(0)
@@ -42,6 +57,8 @@ export function SearchPage() {
     text: text || undefined,
     tier: tier ? [tier] : undefined,
     topic: topic ? [topic] : undefined,
+    scope:
+      scopeMode === 'all' ? ALL_SCOPES : scopeMode === 'out' ? ['out_of_scope'] : undefined,
     year_from: yearFrom ? Number(yearFrom) : undefined,
     year_to: yearTo ? Number(yearTo) : undefined,
   }
@@ -57,7 +74,7 @@ export function SearchPage() {
       setError((e as Error).message)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [text, tier, topic, yearFrom, yearTo, page])
+  }, [text, tier, topic, scopeMode, yearFrom, yearTo, page])
 
   useEffect(() => {
     void load()
@@ -85,6 +102,11 @@ export function SearchPage() {
         />
         <select value={tier} onChange={(e) => { setTier(e.target.value); setPage(0) }}>
           {TIER_CHOICES.map((c) => (
+            <option key={c.value} value={c.value}>{c.label}</option>
+          ))}
+        </select>
+        <select value={scopeMode} onChange={(e) => { setScopeMode(e.target.value); setPage(0) }}>
+          {SCOPE_CHOICES.map((c) => (
             <option key={c.value} value={c.value}>{c.label}</option>
           ))}
         </select>

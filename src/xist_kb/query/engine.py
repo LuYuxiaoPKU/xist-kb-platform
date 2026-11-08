@@ -37,13 +37,17 @@ GOLD_TABLES = (
     "species_xist",
     "paper_id_map",
     "claim_provenance",
+    "paper_scope",
     "chunks",
 )
 
 # Tables the query layer can run without. A missing one is not fatal, so a
 # Gold directory built before the table existed still opens; search features
-# degrade (tier filter, full-text) rather than the whole API failing.
-OPTIONAL_TABLES = frozenset({"paper_id_map", "claim_provenance", "chunks"})
+# degrade (tier filter, scope filter, full-text) rather than the whole API
+# failing.
+OPTIONAL_TABLES = frozenset(
+    {"paper_id_map", "claim_provenance", "paper_scope", "chunks"}
+)
 
 # Materialised into the index database because DuckDB can only build an FTS
 # index on a table; every other table stays a view.
@@ -73,7 +77,7 @@ def connect(gold_dir=None, index_file: Path | None = None) -> duckdb.DuckDBPyCon
     index = index_file if index_file is not None else index_path()
     if index.exists():
         conn = duckdb.connect(str(index), read_only=True)
-        if _has_table(conn, "claims"):
+        if has_table(conn, "claims"):
             return conn
         conn.close()  # an older index without the tables; fall through
 
@@ -90,7 +94,13 @@ def connect(gold_dir=None, index_file: Path | None = None) -> duckdb.DuckDBPyCon
     return conn
 
 
-def _has_table(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+def has_table(conn: duckdb.DuckDBPyConnection, name: str) -> bool:
+    """Whether a table is queryable on this connection.
+
+    Public because callers other than `connect` need it: an optional table like
+    `paper_scope` can be missing on an older Gold layer, and the query that
+    would use it has to choose a different SQL rather than raise.
+    """
     try:
         conn.execute(f"SELECT 1 FROM {name} LIMIT 0")
         return True
