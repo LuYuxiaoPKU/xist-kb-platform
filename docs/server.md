@@ -50,14 +50,50 @@ node --version   # v22.22.2
 /Data7/luyx/XIST-KB/
 ├── app/           # this repository (git clone)
 └── data/          # Parquet layers, PDFs — never in git
-    ├── bronze/
-    ├── silver/
-    ├── gold/
-    └── index/
+    ├── gold/      # 13 parquet tables, 290 MB
+    ├── index/     # xist.duckdb, 1.6 GB, materialised + FTS
+    └── v2/papers/text/   # 13,502 paper texts, 677 MB
 ```
 
 Set `XIST_KB_DATA=/Data7/luyx/XIST-KB/data` in `app/.env` so the code writes
-outside the checkout.
+outside the checkout. `XIST_KB_TEXT_DIR` defaults to
+`$XIST_KB_DATA/v2/papers/text`, which is where the texts were placed.
+
+## Running it
+
+```bash
+cd /Data7/luyx/XIST-KB/app
+./deploy/serve.sh start     # background, restart loop, PID in run/xist-kb.pid
+./deploy/serve.sh status    # also runs the health check
+./deploy/serve.sh stop
+```
+
+Port **8420** on 127.0.0.1. Reach it with an SSH tunnel:
+
+```bash
+ssh -L 8420:127.0.0.1:8420 luyx@162.105.248.197
+```
+
+then open `http://127.0.0.1:8420/`. Binding externally instead requires
+`XIST_KB_HOST=0.0.0.0` plus `XIST_KB_ALLOWED_NETS`: the API has one optional
+shared key, not per-user accounts.
+
+`run/` is not in git. The loop is the supervised process and uvicorn is its
+child; `stop` kills the loop first so it cannot restart the child.
+
+## Rebuilding the data
+
+`scripts/rebuild_derived.py` runs the five derived builds and the index in the
+only order that works (chunks → tiers → paper_scope → species_fill →
+regulators → index). The index materialises every table, but the three
+scope/species/regulator builders read through the query layer, which falls back
+to Parquet views only when no index exists — so building the index first yields
+an index missing three tables and the API reports those panels as unavailable.
+
+Rebuild after any change to `migrate_v2.py`: the parquet is the output, and a
+code fix not followed by a re-run leaves the old data in place. That is how 16
+duplicate `claim_id`s survived a "fixed" commit and only surfaced when the
+server deployment checked `count(*)-count(DISTINCT claim_id)`.
 
 ## Network
 
