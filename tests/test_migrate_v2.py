@@ -448,3 +448,34 @@ class TestPaperIdCase:
         stats = Migration(V2Source(mixed_case_tree), out_dir=mixed_case_tree / "o").run()
         assert stats.paper_id_lowercased == 1
         assert stats.claim_paper_id_lowercased == 0
+
+
+class TestClaimIdCollisions:
+    def test_duplicate_claims_get_distinct_ids(self, tmp_path, v2_tree):
+        """A paper can state the same claim twice with the same missing quote.
+
+        Measured on the real corpus: 11 ids covered 27 rows. The occurrence
+        ordinal is part of the id, so the first row keeps its original id and
+        later duplicates get their own.
+        """
+        claims_csv = v2_tree / "notes" / "claims" / "smith2019_abc_claims.csv"
+        with claims_csv.open("a", encoding="utf-8", newline="") as fh:
+            writer = csv.writer(fh)
+            writer.writerow(
+                ["smith2019_abc", "Xist coats the inactive X", "xci", "Fig 1",
+                 "direct_experimental", "direct", "results", "Xist coats the X.",
+                 "Fig 1", "mouse", "ES cells", "high", ""]
+            )
+        out = tmp_path / "o"
+        stats = Migration(V2Source(v2_tree), out_dir=out).run()
+        rows = pq.read_table(out / "claims.parquet").to_pylist()
+        same = [r for r in rows if r["claim"] == "Xist coats the inactive X"]
+        assert len(same) == 2
+        assert len({r["claim_id"] for r in same}) == 2
+        assert stats.claim_id_collisions_resolved == 1
+
+    def test_all_claim_ids_unique(self, tmp_path, v2_tree):
+        out = tmp_path / "o"
+        Migration(V2Source(v2_tree), out_dir=out).run()
+        ids = [r["claim_id"] for r in pq.read_table(out / "claims.parquet").to_pylist()]
+        assert len(ids) == len(set(ids))

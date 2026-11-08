@@ -20,7 +20,27 @@ class ClaimFilter:
     year_to: int | None = None
     confidence: list[str] = field(default_factory=list)
     evidence_types: list[str] = field(default_factory=list)
+    tiers: list[str] = field(default_factory=list)
     text: str | None = None
+    limit: int = 50
+    offset: int = 0
+
+
+@dataclass
+class ChunkFilter:
+    """Full-text search over sentence windows.
+
+    Separate from ClaimFilter because it searches the papers, not the
+    annotations: a query for "A-repeat" should surface the sentence even when
+    no claim was ever extracted from it. Measured on 800k windows: LIKE 280ms,
+    FTS with BM25 ranking 300ms -- the ranking is why FTS is preferred, not the
+    speed.
+    """
+
+    text: str
+    paper_ids: list[str] = field(default_factory=list)
+    year_from: int | None = None
+    year_to: int | None = None
     limit: int = 50
     offset: int = 0
 
@@ -69,6 +89,14 @@ def search_claims(conn: duckdb.DuckDBPyConnection, f: ClaimFilter) -> tuple[list
         where.append(clause)
     if clause := _in_clause(f.evidence_types, "c.evidence_type", params):
         where.append(clause)
+    if f.tiers:
+        # tiers live in the derived claim_provenance table
+        where.append(
+            "c.claim_id IN (SELECT claim_id FROM claim_provenance WHERE tier IN ("
+            + ", ".join("?" for _ in f.tiers)
+            + "))"
+        )
+        params.extend(f.tiers)
     if f.species:
         # species is a list column; exact membership avoids LIKE over-splitting.
         for sp in f.species:
@@ -198,3 +226,91 @@ def get_interactors(conn: duckdb.DuckDBPyConnection, protein: str | None = None)
     else:
         rows = conn.execute("SELECT * FROM interactors ORDER BY protein").fetchdf()
     return rows.to_dict("records")
+
+
+def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list[dict], int]:
+    """Search sentence windows, ranked by BM25 when the FTS index is present.
+
+    Two paths, same result shape:
+
+    * FTS (preferred): `fts_main_chunks` is built by `build/fts.py`. It ranks
+      by BM25, so "A-repeat" surfaces the sentences that are *about* the
+      A-repeat, not the first 50 by paper id.
+    * LIKE (fallback): works on a fresh checkout before the index is built.
+
+    The index cannot be queried through an alias in the SELECT list -- DuckDB
+    rejects that as "expression has side effects" -- hence the subquery form.
+    """
+    params: list = []
+    extra: list[str] = []
+    if f.paper_ids:
+        extra.append("paper_id IN (" + ", ".join("?" for _ in f.paper_ids) + ")")
+        params.extend(f.paper_ids)
+    if f.year_from is not None:
+        extra.append("paper_id IN (SELECT paper_id FROM papers WHERE year >= ?)")
+        params.append(f.year_from)
+    if f.year_to is not None:
+        extra.append("paper_id IN (SELECT paper_id FROM papers WHERE year <= ?)")
+        params.append(f.year_to)
+    filter_sql = (" AND " + " AND ".join(extra)) if extra else ""
+
+    match_fn = _fts_match_function(conn)
+    if match_fn:
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT * FROM (
+                    SELECT chunk_id, paper_id, chunk_index, start, "end", text,
+                           {match_fn}(chunk_id, ?) AS score
+                    FROM chunks
+                    WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}
+                ) WHERE score IS NOT NULL
+                ORDER BY score DESC
+                LIMIT ? OFFSET ?
+                """,
+                [f.text, f.text, *params, f.limit, f.offset],
+            ).fetchdf()
+            total = conn.execute(
+                f"""
+                SELECT count(*) FROM chunks
+                WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}
+                """,
+                [f.text, *params],
+            ).fetchone()
+            return rows.to_dict("records"), int(total[0]) if total else 0
+        except duckdb.Error:
+            pass  # index present but unusable for this query; fall through
+
+    pattern = f"%{f.text.strip()}%"
+    where = f"WHERE text ILIKE ?{filter_sql}"
+    rows = conn.execute(
+        f"""
+        SELECT chunk_id, paper_id, chunk_index, start, "end", text, NULL::DOUBLE AS score
+        FROM chunks {where}
+        ORDER BY paper_id, chunk_index
+        LIMIT ? OFFSET ?
+        """,
+        [pattern, *params, f.limit, f.offset],
+    ).fetchdf()
+    total_row = conn.execute(
+        f"SELECT count(*) FROM chunks {where}", [pattern, *params]
+    ).fetchone()
+    return rows.to_dict("records"), int(total_row[0]) if total_row else 0
+
+
+def _fts_match_function(conn: duckdb.DuckDBPyConnection) -> str | None:
+    """Fully-qualified BM25 function name, or None when there is no index.
+
+    DuckDB registers the FTS scalar as `fts_main_<table>.match_bm25`, and an
+    index built in an attached database keeps that database's namespace:
+    `idx.fts_main_chunks.match_bm25`. Both spellings are probed because which
+    one exists depends on whether the index file was attached or opened
+    directly.
+    """
+    for candidate in ("fts_main_chunks", "idx.fts_main_chunks"):
+        try:
+            conn.execute(f"SELECT {candidate}.match_bm25(chunk_id, 'probe') FROM chunks LIMIT 1")
+        except duckdb.Error:
+            continue
+        return f"{candidate}.match_bm25"
+    return None

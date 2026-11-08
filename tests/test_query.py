@@ -352,3 +352,108 @@ class TestPaperDetail:
     def test_interactors_empty(self, gold):
         conn = connect(gold)
         assert search.get_interactors(conn) == []
+
+
+class TestChunkSearch:
+    """Sentence-window search falls back to LIKE when there is no FTS index.
+
+    The FTS path needs a materialised index database, which a test fixture
+    cannot build in milliseconds; the LIKE path exercises the same filter and
+    pagination logic.
+    """
+
+    @pytest.fixture
+    def with_chunks(self, gold):
+        chunks = [
+            {
+                "chunk_id": f"ch{i}",
+                "paper_id": "p1" if i < 2 else "p2",
+                "chunk_index": i,
+                "start": i * 600,
+                "end": i * 600 + 500,
+                "text": text,
+                "char_count": len(text),
+            }
+            for i, text in enumerate(
+                [
+                    "Xist RNA coats the inactive X chromosome in cis.",
+                    "Polycomb complexes are recruited by the A-repeat.",
+                    "Dosage compensation balances X-linked gene expression.",
+                ]
+            )
+        ]
+        pq.write_table(
+            pa.Table.from_pylist(
+                chunks,
+                pa.schema(
+                    [
+                        ("chunk_id", pa.string()),
+                        ("paper_id", pa.string()),
+                        ("chunk_index", pa.int32()),
+                        ("start", pa.int32()),
+                        ("end", pa.int32()),
+                        ("text", pa.string()),
+                        ("char_count", pa.int32()),
+                    ]
+                ),
+            ),
+            gold / "chunks.parquet",
+        )
+        return gold
+
+    def test_like_fallback_finds_chunk(self, with_chunks):
+        conn = connect(with_chunks)
+        rows, total = search.search_chunks(conn, search.ChunkFilter(text="A-repeat"))
+        assert total == 1
+        assert "Polycomb" in rows[0]["text"]
+
+    def test_respects_limit(self, with_chunks):
+        conn = connect(with_chunks)
+        rows, total = search.search_chunks(conn, search.ChunkFilter(text="X", limit=1))
+        assert len(rows) == 1
+        assert total >= 1
+
+    def test_filters_by_paper(self, with_chunks):
+        conn = connect(with_chunks)
+        rows, total = search.search_chunks(
+            conn, search.ChunkFilter(text="X", paper_ids=["p2"])
+        )
+        assert all(r["paper_id"] == "p2" for r in rows)
+
+    def test_no_match_returns_empty(self, with_chunks):
+        conn = connect(with_chunks)
+        rows, total = search.search_chunks(conn, search.ChunkFilter(text="nonexistent"))
+        assert rows == []
+        assert total == 0
+
+
+class TestTierFilter:
+    @pytest.fixture
+    def with_tiers(self, gold):
+        rows = [
+            {"claim_id": "c1", "paper_id": "p1", "tier": "P1"},
+            {"claim_id": "c2", "paper_id": "p1", "tier": "S"},
+            {"claim_id": "c3", "paper_id": "p2", "tier": "K"},
+        ]
+        import pyarrow as pa2
+
+        schema = pa2.schema(
+            [
+                ("claim_id", pa2.string()),
+                ("paper_id", pa2.string()),
+                ("tier", pa2.string()),
+            ]
+        )
+        pq.write_table(pa2.Table.from_pylist(rows, schema), gold / "claim_provenance.parquet")
+        return gold
+
+    def test_filter_by_single_tier(self, with_tiers):
+        conn = connect(with_tiers)
+        rows, total = search.search_claims(conn, search.ClaimFilter(tiers=["P1"]))
+        assert total == 1
+        assert rows[0]["claim_id"] == "c1"
+
+    def test_filter_by_multiple_tiers(self, with_tiers):
+        conn = connect(with_tiers)
+        _, total = search.search_claims(conn, search.ClaimFilter(tiers=["P1", "S"]))
+        assert total == 2

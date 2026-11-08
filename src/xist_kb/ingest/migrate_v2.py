@@ -239,6 +239,7 @@ class MigrationStats:
     quote_missing: int = 0
     paper_id_lowercased: int = 0
     claim_paper_id_lowercased: int = 0
+    claim_id_collisions_resolved: int = 0
     papers_without_annotation: int = 0
     annotations_without_paper: int = 0
     claims_without_paper: int = 0
@@ -265,6 +266,7 @@ class MigrationStats:
                 "species_parsed": self.species_parsed,
                 "paper_id_lowercased": self.paper_id_lowercased,
                 "claim_paper_id_lowercased": self.claim_paper_id_lowercased,
+                "claim_id_collisions_resolved": self.claim_id_collisions_resolved,
             },
             "gaps": {
                 "year_missing": self.year_missing,
@@ -390,6 +392,7 @@ class Migration:
         """
         rows: list[dict] = []
         provenance_by_paper: dict[str, tuple[str, str]] = {}
+        occurrence_counts: dict[tuple[str, str, str, str], int] = {}
 
         for raw in self.source.iter_claim_rows():
             self.stats.claims_read += 1
@@ -442,9 +445,22 @@ class Migration:
                 provenance_by_paper[paper_id] = entry
             provenance_id = entry[0]
 
+            # A paper can state the same claim twice (often once per experiment
+            # section, with the same missing quote). Measured: 11 ids covered 27
+            # rows. The occurrence index is the ordinal among rows that agree on
+            # every field the id is built from, so the first keeps suffix 0 and
+            # its id is unchanged by later duplicates.
+            key = (paper_id, claim_text, section, quote or "")
+            occurrence = occurrence_counts.get(key, 0)
+            occurrence_counts[key] = occurrence + 1
+            if occurrence:
+                self.stats.claim_id_collisions_resolved += 1
+
             rows.append(
                 {
-                    "claim_id": stable_id("claim", paper_id, claim_text, raw.get("section")),
+                    "claim_id": stable_id(
+                        "claim", paper_id, claim_text, section, quote, occurrence
+                    ),
                     "paper_id": paper_id,
                     "claim": claim_text,
                     "topic": topic,
