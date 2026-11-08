@@ -29,6 +29,12 @@ class ClaimFilter:
     text: str | None = None
     limit: int = 50
     offset: int = 0
+    # Fill species from `species_fill` for claims whose annotation left the field
+    # blank. Off by default: those values are inferred from the paper rather than
+    # read off the claim, and a caller that filters on species is asking what the
+    # annotation says. Turning it on widens the answer to "what is most likely
+    # true of the claim", which is a different question.
+    include_inferred_species: bool = False
 
 
 @dataclass
@@ -134,9 +140,20 @@ def search_claims(conn: duckdb.DuckDBPyConnection, f: ClaimFilter) -> tuple[list
         params.extend(f.tiers)
     if f.species:
         # species is a list column; exact membership avoids LIKE over-splitting.
+        # With inferred species on, a claim also matches when its paper-level
+        # inference names the species -- otherwise turning the option on would
+        # change the displayed value without changing which rows a species
+        # filter returns, which is the more confusing of the two behaviours.
         for sp in f.species:
-            where.append("list_contains(c.species, ?)")
-            params.append(sp)
+            if f.include_inferred_species and has_table(conn, "species_fill"):
+                where.append(
+                    "(list_contains(c.species, ?) OR c.claim_id IN "
+                    "(SELECT claim_id FROM species_fill WHERE list_contains(species, ?)))"
+                )
+                params.extend([sp, sp])
+            else:
+                where.append("list_contains(c.species, ?)")
+                params.append(sp)
     if f.year_from is not None:
         where.append("p.year >= ?")
         params.append(f.year_from)

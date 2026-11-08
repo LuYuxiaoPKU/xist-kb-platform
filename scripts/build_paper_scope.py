@@ -56,7 +56,20 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+
+
+def _utf8_stdout() -> None:
+    """Make the Windows console print UTF-8.
+
+    Windows defaults stdout to GBK, which raises on the typographic characters
+    in paper text. Done inside `main` rather than at import so that a test or a
+    caller that imports this module does not have its own stdout replaced and
+    closed underneath it.
+    """
+    if sys.platform == "win32":
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 
 import duckdb  # noqa: E402
 
@@ -130,6 +143,7 @@ def build(conn: duckdb.DuckDBPyConnection, out_path: Path) -> dict:
 
 
 def main() -> None:
+    _utf8_stdout()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     data_dir = Path(os.environ.get("XIST_KB_DATA") or "data_local_lowercase")
     gold = data_dir / "gold" if (data_dir / "gold").is_dir() else data_dir

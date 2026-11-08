@@ -29,6 +29,7 @@ def list_claims(
     evidence_type: Annotated[list[str] | None, Query()] = None,
     tier: Annotated[list[str] | None, Query()] = None,
     scope: Annotated[list[str] | None, Query()] = None,
+    include_inferred_species: Annotated[bool, Query()] = False,
     year_from: int | None = None,
     year_to: int | None = None,
     text: str | None = None,
@@ -52,6 +53,7 @@ def list_claims(
         evidence_types=evidence_type or [],
         tiers=tier or [],
         scopes=scope if scope else list(IN_SCOPE),
+        include_inferred_species=include_inferred_species,
         year_from=year_from,
         year_to=year_to,
         text=text,
@@ -62,7 +64,36 @@ def list_claims(
         rows, total = q.search_claims(res.conn, f)
         _attach_tiers(res.conn, rows)
         _attach_scope(res.conn, rows)
+        if include_inferred_species:
+            _attach_inferred_species(res.conn, rows)
     return {"total": total, "limit": limit, "offset": offset, "items": clean_rows(rows)}
+
+
+def _attach_inferred_species(conn, rows: list[dict]) -> None:
+    """Attach `species_inferred` where the annotation left species blank.
+
+    A separate field rather than overwriting `species`: a reader has to be able
+    to tell what the annotation recorded from what was inferred about the paper,
+    and the two are answers to different questions.
+    """
+    blanks = [r["claim_id"] for r in rows if not r.get("species")]
+    if not blanks:
+        return
+    try:
+        pairs = conn.execute(
+            "SELECT claim_id, species, source FROM species_fill WHERE claim_id IN ("
+            + ", ".join("?" for _ in blanks)
+            + ")",
+            blanks,
+        ).fetchall()
+    except Exception:
+        return
+    fill = {cid: (sp, src) for cid, sp, src in pairs}
+    for row in rows:
+        entry = fill.get(row["claim_id"])
+        if entry:
+            row["species_inferred"] = entry[0]
+            row["species_inferred_source"] = entry[1]
 
 
 def _attach_scope(conn, rows: list[dict]) -> None:
