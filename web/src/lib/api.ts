@@ -173,6 +173,12 @@ export interface Visualize {
   xci_types: { xci_type: string; count: number }[]
   chromatin_marks: { mark: string; papers: number }[]
   chromatin_mark_papers: number
+  regulators: {
+    regulator: string
+    papers: number
+    repression: number
+    activation: number
+  }[]
 }
 
 export interface ClaimFilters {

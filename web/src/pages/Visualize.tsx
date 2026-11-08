@@ -40,6 +40,62 @@ function Bars({
   )
 }
 
+/**
+ * Regulator bars, split by direction.
+ *
+ * A single regulator can have both directions recorded (Tsix represses in most
+ * papers; context-dependent activation exists too), so the bar is segmented
+ * rather than picking one. Widths are relative to the largest total, which keeps
+ * the segments comparable across rows.
+ */
+function RegulatorBars({ rows }: { rows: Visualize['regulators'] }) {
+  const max = Math.max(...rows.map((r) => r.papers), 1)
+  return (
+    <div className="claim-list">
+      {rows.map((r) => (
+        <div key={r.regulator} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span
+            style={{
+              width: 150,
+              flexShrink: 0,
+              fontSize: 13,
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+            }}
+            title={r.regulator}
+          >
+            {r.regulator}
+          </span>
+          <span
+            style={{
+              flex: 1,
+              display: 'flex',
+              gap: 2,
+              height: 16,
+              background: 'var(--bg-subtle)',
+              borderRadius: 3,
+              overflow: 'hidden',
+            }}
+          >
+            <span
+              style={{ width: `${(100 * r.repression) / max}%`, background: '#c2410c', opacity: 0.8 }}
+              title={`抑制 ${r.repression} 篇`}
+            />
+            <span
+              style={{ width: `${(100 * r.activation) / max}%`, background: '#15803d', opacity: 0.8 }}
+              title={`激活 ${r.activation} 篇`}
+            />
+          </span>
+          <span className="meta" style={{ width: 92, textAlign: 'right' }}>
+            {r.papers.toLocaleString()} 篇
+          </span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function VisualizePage() {
   const [data, setData] = useState<Visualize | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -63,6 +119,18 @@ export function VisualizePage() {
         <p className="side-title">XIST 互作蛋白（按记载次数）</p>
         <Bars rows={data.interactors} label="protein" value="claims" unit="条" />
       </section>
+
+      {data.regulators.length > 0 && (
+        <section style={{ marginBottom: 30 }}>
+          <p className="side-title">XIST 的调控因子（按论文数）</p>
+          <RegulatorBars rows={data.regulators} />
+          <p className="meta" style={{ marginTop: 8 }}>
+            <span style={{ color: '#c2410c' }}>■</span> 抑制
+            {' '}<span style={{ color: '#15803d' }}>■</span> 激活。
+            同一调控因子的不同大小写拼写已合并；计数按论文去重，一篇论文报三次只算一次。
+          </p>
+        </section>
+      )}
 
       <section style={{ marginBottom: 30 }}>
         <p className="side-title">研究物种</p>

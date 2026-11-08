@@ -115,4 +115,74 @@ def visualizing_payload(conn: duckdb.DuckDBPyConnection, top: int = 15) -> dict:
             for mark in TRACKED_MARKS
         ],
         "chromatin_mark_papers": total_papers,
+        "regulators": _regulator_panel(conn, top),
     }
+
+
+def _regulator_panel(conn: duckdb.DuckDBPyConnection, top: int) -> list[dict]:
+    """Who represses or activates Xist, grouped by normalized name.
+
+    Reads `regulators` (the normalized table) rather than `regulations`, because
+    the raw table splits `Tsix` and `TSIX` into separate factors and the chart
+    would show two short bars instead of one tall one.
+
+    Returns an empty list when the normalized table has not been built: the page
+    then omits the panel rather than showing a wrong one.
+
+    The counts are regulator-paper pairs, not regulator entries: one paper that
+    reports Tsix repression in three cell lines contributes three rows to
+    `regulations` but is one piece of evidence, and counting rows would let
+    heavily-figured papers dominate the ranking.
+    """
+    try:
+        # Group by the case-folded name, and take a display spelling from the
+        # data. `regulators.regulator` is already alias-stripped, but it keeps
+        # its original capitalisation, so `NANOG` and `Nanog` are still two rows
+        # at this level -- the chart showed them as two factors 58 and 49 papers
+        # wide until this grouped on `lower()`.
+        #
+        # Every (regulator, direction) pair, then merge and rank in Python. No
+        # SQL LIMIT: the ranking is on the merged paper count, and a pair that
+        # ranks low on its own can rank high once merged -- capping in SQL would
+        # drop exactly the pairs that need merging most.
+        rows = conn.execute(
+            """
+            SELECT lower(regulator) AS key,
+                   arg_max(regulator, spellings) AS display,
+                   direction,
+                   count(DISTINCT paper_id) AS papers
+            FROM (
+                SELECT regulator, direction, paper_id,
+                       count(*) OVER (
+                           PARTITION BY lower(regulator), regulator
+                       ) AS spellings
+                FROM regulators WHERE regulator <> ''
+            )
+            GROUP BY 1, 3
+            """
+        ).fetchall()
+    except duckdb.CatalogException:
+        return []
+
+    by_regulator: dict[str, dict] = {}
+    for key, display, direction, papers in rows:
+        entry = by_regulator.setdefault(
+            key,
+            {
+                "regulator": display,
+                "papers": 0,
+                "repression": 0,
+                "activation": 0,
+            },
+        )
+        # Prefer the spelling the corpus uses most; `min()` is a stable
+        # tie-break, and both forms are the same gene either way.
+        entry["papers"] += papers
+        kind = (direction or "").strip().lower()
+        if kind in ("repression", "inhibition", "downregulation", "negative"):
+            entry["repression"] += papers
+        elif kind in ("activation", "upregulation", "positive"):
+            entry["activation"] += papers
+
+    ranked = sorted(by_regulator.values(), key=lambda e: -e["papers"])
+    return ranked[:top]

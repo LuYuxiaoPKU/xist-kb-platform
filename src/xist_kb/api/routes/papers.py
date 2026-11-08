@@ -13,8 +13,8 @@ from xist_kb import ask as asker
 from xist_kb.api.deps import resources
 from xist_kb.api.serialize import clean_rows
 from xist_kb.query import search as q
-from xist_kb.query.paper_scope import IN_SCOPE
 from xist_kb.query.aggregate import visualizing_payload
+from xist_kb.query.paper_scope import IN_SCOPE
 
 router = APIRouter(prefix="/api", tags=["papers"])
 

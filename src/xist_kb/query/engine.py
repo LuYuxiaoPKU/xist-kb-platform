@@ -39,15 +39,23 @@ GOLD_TABLES = (
     "claim_provenance",
     "paper_scope",
     "species_fill",
+    "regulators",
     "chunks",
 )
 
 # Tables the query layer can run without. A missing one is not fatal, so a
 # Gold directory built before the table existed still opens; search features
-# degrade (tier filter, scope filter, species fill, full-text) rather than the
-# whole API failing.
+# degrade (tier filter, scope filter, species fill, regulator grouping,
+# full-text) rather than the whole API failing.
 OPTIONAL_TABLES = frozenset(
-    {"paper_id_map", "claim_provenance", "paper_scope", "species_fill", "chunks"}
+    {
+        "paper_id_map",
+        "claim_provenance",
+        "paper_scope",
+        "species_fill",
+        "regulators",
+        "chunks",
+    }
 )
 
 # Materialised into the index database because DuckDB can only build an FTS
