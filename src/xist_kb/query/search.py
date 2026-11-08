@@ -7,6 +7,7 @@ the most recent annotated claims rather than the whole 115k table.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 import duckdb
@@ -296,23 +297,7 @@ def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list
     match_fn = _fts_match_function(conn)
     if match_fn:
         try:
-            cursor = conn.execute(
-                f"""
-                SELECT * FROM (
-                    SELECT chunk_id, paper_id, chunk_index, start, "end", text,
-                           {match_fn}(chunk_id, ?) AS score
-                    FROM chunks
-                    WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}
-                ) WHERE score IS NOT NULL
-                ORDER BY score DESC
-                LIMIT ? OFFSET ?
-                """,
-                [f.text, f.text, *params, f.limit, f.offset],
-            )
-            columns = [d[0] for d in cursor.description]
-            page = cursor.fetchall()
-            total = _chunk_total(page, conn, f, match_fn, filter_sql, params)
-            return _to_dicts(page, columns), total
+            return _fts_search(conn, f, match_fn, filter_sql, params)
         except duckdb.Error:
             pass  # index present but unusable for this query; fall through
 
@@ -347,6 +332,98 @@ def _chunk_total(
         [f.text, *params],
     ).fetchone()
     return int(row[0]) if row else 0
+
+
+# FTS returns a lexeme bag: quotes, AND/OR and hyphens are all stripped before
+# matching, so "A-repeat" retrieves every chunk containing "repeat" anywhere --
+# 37,013 of them, ranked by an unrelated G-repeat sentence first. The fix is to
+# re-rank the BM25 candidates by what the user actually typed: exact substring
+# first, then all words present, then the rest.
+_FTS_CANDIDATES = 400
+
+
+def _fts_search(
+    conn: duckdb.DuckDBPyConnection,
+    f: ChunkFilter,
+    match_fn: str,
+    filter_sql: str,
+    params: list,
+) -> tuple[list[dict], int]:
+    needle = f.text.strip().strip('"')
+
+    # A literal hit is always a better answer than a lexeme match, and there are
+    # usually few enough of them to rank exactly. Measured: "A-repeat" has 1,394
+    # literal occurrences, but BM25's top 400 candidates contain none of them --
+    # the index matched "repeat" alone (37,013 chunks) and buried the phrase.
+    literal_total = conn.execute(
+        f"SELECT count(*) FROM chunks WHERE text ILIKE ?{filter_sql}",
+        [f"%{needle}%", *params],
+    ).fetchone()
+    if literal_total and int(literal_total[0]) > 0:
+        cursor = conn.execute(
+            f"""
+            SELECT chunk_id, paper_id, chunk_index, start, "end", text,
+                   {match_fn}(chunk_id, ?) AS score
+            FROM chunks
+            WHERE text ILIKE ?{filter_sql}
+            ORDER BY score DESC NULLS LAST, paper_id, chunk_index
+            LIMIT ? OFFSET ?
+            """,
+            [f.text, f"%{needle}%", *params, f.limit, f.offset],
+        )
+        columns = [d[0] for d in cursor.description]
+        return _to_dicts(cursor.fetchall(), columns), int(literal_total[0])
+
+    # No literal occurrence: the query is a genuine keyword search, and BM25
+    # ranking is exactly what is wanted.
+    cursor = conn.execute(
+        f"""
+        SELECT chunk_id, paper_id, chunk_index, start, "end", text,
+               {match_fn}(chunk_id, ?) AS score
+        FROM chunks
+        WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}
+        ORDER BY score DESC
+        LIMIT ? OFFSET ?
+        """,
+        [f.text, f.text, *params, f.limit, f.offset],
+    )
+    columns = [d[0] for d in cursor.description]
+    page = _to_dicts(cursor.fetchall(), columns)
+
+    total_row = conn.execute(
+        f"SELECT count(*) FROM chunks WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}",
+        [f.text, *params],
+    ).fetchone()
+    total = int(total_row[0]) if total_row else 0
+    return _rerank(page, f.text)[f.offset : f.offset + f.limit], total
+
+
+def _rerank(rows: list[dict], query: str) -> list[dict]:
+    """Order BM25 candidates by how literally they contain the query.
+
+    Tiers, in order:
+      0  the query appears verbatim (case-insensitive)
+      1  every whitespace/AND-separated term appears
+      2  anything else BM25 returned
+
+    Within a tier the BM25 score orders the rows, so relevance ranking survives
+    for queries that are genuinely keyword searches.
+    """
+    needle = query.strip().strip('"').lower()
+    terms = [t.lower() for t in _QUERY_TERM.findall(needle) if len(t) > 1]
+
+    def key(row: dict) -> tuple[int, float]:
+        haystack = row["text"].lower()
+        if needle and needle in haystack:
+            return 0, -(row.get("score") or 0)
+        if terms and all(term in haystack for term in terms):
+            return 1, -(row.get("score") or 0)
+        return 2, -(row.get("score") or 0)
+
+    return sorted(rows, key=key)
+
+
+_QUERY_TERM = re.compile(r"[A-Za-z0-9][A-Za-z0-9\-']*")
 
 
 _FTS_FN_CACHE: dict[int, str | None] = {}

@@ -457,3 +457,46 @@ class TestTierFilter:
         conn = connect(with_tiers)
         _, total = search.search_claims(conn, search.ClaimFilter(tiers=["P1", "S"]))
         assert total == 2
+
+
+class TestRerank:
+    """The FTS index is a lexeme bag, so literal hits must be ranked first.
+
+    Measured on the real corpus: "A-repeat" matches 37,013 chunks through the
+    word "repeat" alone, and the top BM25 candidate was a sentence about a
+    "repeat G region" -- while the 1,394 chunks that literally say "A-repeat"
+    were not in the top 400 at all.
+    """
+
+    def test_literal_matches_rank_above_lexeme_matches(self):
+        rows = [
+            {"text": "The alignment of the repeat G region was conserved.", "score": 9.0},
+            {"text": "Deletion of the A-repeat abolishes silencing.", "score": 2.0},
+        ]
+        ranked = search._rerank(rows, "A-repeat")
+        assert "A-repeat" in ranked[0]["text"]
+
+    def test_all_terms_present_ranks_second(self):
+        rows = [
+            {"text": "Polycomb binds here.", "score": 9.0},
+            {"text": "Xist recruits Polycomb complexes.", "score": 2.0},
+            {"text": "Polycomb alone.", "score": 5.0},
+        ]
+        ranked = search._rerank(rows, "Xist Polycomb")
+        assert ranked[0]["text"] == "Xist recruits Polycomb complexes."
+
+    def test_bm25_order_survives_within_a_tier(self):
+        rows = [
+            {"text": "Polycomb binds here.", "score": 2.0},
+            {"text": "Polycomb binds elsewhere.", "score": 9.0},
+        ]
+        ranked = search._rerank(rows, "Polycomb")
+        assert ranked[0]["score"] == 9.0
+
+    def test_unknown_query_keeps_bm25_order(self):
+        rows = [
+            {"text": "first", "score": 2.0},
+            {"text": "second", "score": 9.0},
+        ]
+        ranked = search._rerank(rows, "unrelated")
+        assert [r["text"] for r in ranked] == ["second", "first"]

@@ -54,3 +54,8 @@ logs/
 
 # 未发表数据（跨会话协作结果，禁止入库）
 private/
+
+# 前端构建产物与依赖
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
