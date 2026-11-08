@@ -35,6 +35,11 @@ class ChunkFilter:
     no claim was ever extracted from it. Measured on 800k windows: LIKE 280ms,
     FTS with BM25 ranking 300ms -- the ranking is why FTS is preferred, not the
     speed.
+
+    `exact_total` is off by default because counting matches costs as much as
+    the search itself (a second BM25 pass over the whole table). With it off,
+    `total` is the number of rows on this page, and the UI says "showing 50"
+    instead of blocking a second to learn the true count.
     """
 
     text: str
@@ -43,6 +48,7 @@ class ChunkFilter:
     year_to: int | None = None
     limit: int = 50
     offset: int = 0
+    exact_total: bool = False
 
 
 @dataclass
@@ -53,6 +59,30 @@ class PaperFilter:
     text: str | None = None
     limit: int = 50
     offset: int = 0
+
+
+def _to_dicts(rows: list[tuple], columns: list[str]) -> list[dict]:
+    """Rows as dicts, without pandas.
+
+    `fetchdf()` cost 718 ms for a 50-row join over these tables against 30 ms
+    for `fetchall()`: pandas' type inference over the nested list columns
+    dominates. Rows are serialized field by field downstream anyway.
+
+    `rows` must already be fetched. DuckDB's `execute` returns the connection
+    itself, so holding a pending result across a second `execute` on the same
+    connection silently yields the newer query's rows -- and `fetchall()`
+    returns a bare list, discarding the column names with it.
+    """
+    return [dict(zip(columns, row, strict=False)) for row in rows]
+
+
+def _fetch(
+    conn: duckdb.DuckDBPyConnection, sql: str, params: list
+) -> tuple[list[tuple], list[str]]:
+    """Execute and return (rows, column names) in one shot."""
+    cursor = conn.execute(sql, params)
+    columns = [d[0] for d in cursor.description]
+    return cursor.fetchall(), columns
 
 
 def _in_clause(values: list[str], column: str, params: list) -> str | None:
@@ -117,7 +147,7 @@ def search_claims(conn: duckdb.DuckDBPyConnection, f: ClaimFilter) -> tuple[list
     count_row = conn.execute(f"SELECT count(*) {base}", params).fetchone()
     total = int(count_row[0]) if count_row else 0
 
-    rows = conn.execute(
+    rows, cols = _fetch(conn,
         f"""
         SELECT c.claim_id, c.paper_id, c.claim, c.topic, c.evidence_type,
                c.directness, c.section, c.confidence, c.species, c.quote,
@@ -128,8 +158,8 @@ def search_claims(conn: duckdb.DuckDBPyConnection, f: ClaimFilter) -> tuple[list
         LIMIT ? OFFSET ?
         """,
         [*params, f.limit, f.offset],
-    ).fetchdf()
-    return rows.to_dict("records"), total
+    )
+    return _to_dicts(rows, cols), total
 
 
 def search_papers(conn: duckdb.DuckDBPyConnection, f: PaperFilter) -> tuple[list[dict], int]:
@@ -151,7 +181,7 @@ def search_papers(conn: duckdb.DuckDBPyConnection, f: PaperFilter) -> tuple[list
     count_row = conn.execute(f"SELECT count(*) FROM papers{where_sql}", params).fetchone()
     total = int(count_row[0]) if count_row else 0
 
-    rows = conn.execute(
+    rows, cols = _fetch(conn,
         f"""
         SELECT paper_id, title, year, journal, first_author, doi, pmid,
                species, status, has_text, has_pdf, has_annotation
@@ -160,8 +190,8 @@ def search_papers(conn: duckdb.DuckDBPyConnection, f: PaperFilter) -> tuple[list
         LIMIT ? OFFSET ?
         """,
         [*params, f.limit, f.offset],
-    ).fetchdf()
-    return rows.to_dict("records"), total
+    )
+    return _to_dicts(rows, cols), total
 
 
 def stats(conn: duckdb.DuckDBPyConnection) -> dict:
@@ -196,8 +226,16 @@ def stats(conn: duckdb.DuckDBPyConnection) -> dict:
 
 
 def get_paper(conn: duckdb.DuckDBPyConnection, paper_id: str) -> dict | None:
-    row = conn.execute("SELECT * FROM papers WHERE paper_id = ?", [paper_id]).fetchdf()
-    return None if row.empty else row.to_dict("records")[0]
+    rows, cols = _fetch(conn, "SELECT * FROM papers WHERE paper_id = ?", [paper_id])
+    records = _to_dicts(rows, cols)
+    return records[0] if records else None
+
+
+_CLAIM_PAPER_COLUMNS = [
+    "claim_id", "claim", "topic", "evidence_type", "directness", "section",
+    "confidence", "species", "quote", "quote_offset_start", "quote_offset_end",
+    "chunk_id", "provenance_id", "annotation_method",
+]
 
 
 def get_claims_for_paper(conn: duckdb.DuckDBPyConnection, paper_id: str) -> list[dict]:
@@ -213,19 +251,20 @@ def get_claims_for_paper(conn: duckdb.DuckDBPyConnection, paper_id: str) -> list
         ORDER BY c.section, c.claim_id
         """,
         [paper_id],
-    ).fetchdf()
-    return rows.to_dict("records")
+    ).fetchall()
+    return _to_dicts(rows, _CLAIM_PAPER_COLUMNS)
 
 
 def get_interactors(conn: duckdb.DuckDBPyConnection, protein: str | None = None) -> list[dict]:
     if protein:
-        rows = conn.execute(
+        rows, cols = _fetch(
+            conn,
             "SELECT * FROM interactors WHERE protein ILIKE ? ORDER BY protein",
             [f"%{protein}%"],
-        ).fetchdf()
+        )
     else:
-        rows = conn.execute("SELECT * FROM interactors ORDER BY protein").fetchdf()
-    return rows.to_dict("records")
+        rows, cols = _fetch(conn, "SELECT * FROM interactors ORDER BY protein", [])
+    return _to_dicts(rows, cols)
 
 
 def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list[dict], int]:
@@ -257,7 +296,7 @@ def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list
     match_fn = _fts_match_function(conn)
     if match_fn:
         try:
-            rows = conn.execute(
+            cursor = conn.execute(
                 f"""
                 SELECT * FROM (
                     SELECT chunk_id, paper_id, chunk_index, start, "end", text,
@@ -269,21 +308,17 @@ def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list
                 LIMIT ? OFFSET ?
                 """,
                 [f.text, f.text, *params, f.limit, f.offset],
-            ).fetchdf()
-            total = conn.execute(
-                f"""
-                SELECT count(*) FROM chunks
-                WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}
-                """,
-                [f.text, *params],
-            ).fetchone()
-            return rows.to_dict("records"), int(total[0]) if total else 0
+            )
+            columns = [d[0] for d in cursor.description]
+            page = cursor.fetchall()
+            total = _chunk_total(page, conn, f, match_fn, filter_sql, params)
+            return _to_dicts(page, columns), total
         except duckdb.Error:
             pass  # index present but unusable for this query; fall through
 
     pattern = f"%{f.text.strip()}%"
     where = f"WHERE text ILIKE ?{filter_sql}"
-    rows = conn.execute(
+    cursor = conn.execute(
         f"""
         SELECT chunk_id, paper_id, chunk_index, start, "end", text, NULL::DOUBLE AS score
         FROM chunks {where}
@@ -291,11 +326,30 @@ def search_chunks(conn: duckdb.DuckDBPyConnection, f: ChunkFilter) -> tuple[list
         LIMIT ? OFFSET ?
         """,
         [pattern, *params, f.limit, f.offset],
-    ).fetchdf()
+    )
+    columns = [d[0] for d in cursor.description]
+    page = cursor.fetchall()
+    if not f.exact_total:
+        return _to_dicts(page, columns), len(page)
     total_row = conn.execute(
         f"SELECT count(*) FROM chunks {where}", [pattern, *params]
     ).fetchone()
-    return rows.to_dict("records"), int(total_row[0]) if total_row else 0
+    return _to_dicts(page, columns), int(total_row[0]) if total_row else 0
+
+
+def _chunk_total(
+    page_rows: list, conn, f: ChunkFilter, match_fn: str, filter_sql: str, params: list
+) -> int:
+    if not f.exact_total:
+        return len(page_rows)  # the page size, not the true match count
+    row = conn.execute(
+        f"SELECT count(*) FROM chunks WHERE {match_fn}(chunk_id, ?) IS NOT NULL{filter_sql}",
+        [f.text, *params],
+    ).fetchone()
+    return int(row[0]) if row else 0
+
+
+_FTS_FN_CACHE: dict[int, str | None] = {}
 
 
 def _fts_match_function(conn: duckdb.DuckDBPyConnection) -> str | None:
@@ -307,10 +361,18 @@ def _fts_match_function(conn: duckdb.DuckDBPyConnection) -> str | None:
     one exists depends on whether the index file was attached or opened
     directly.
     """
+    key = id(conn)
+    if key in _FTS_FN_CACHE:
+        return _FTS_FN_CACHE[key]
+    result: str | None = None
     for candidate in ("fts_main_chunks", "idx.fts_main_chunks"):
         try:
-            conn.execute(f"SELECT {candidate}.match_bm25(chunk_id, 'probe') FROM chunks LIMIT 1")
+            # LIMIT 0 keeps the probe from scoring any row: the probe is
+            # checking whether the function resolves, not what it returns.
+            conn.execute(f"SELECT {candidate}.match_bm25(chunk_id, 'probe') FROM chunks LIMIT 0")
         except duckdb.Error:
             continue
-        return f"{candidate}.match_bm25"
-    return None
+        result = f"{candidate}.match_bm25"
+        break
+    _FTS_FN_CACHE[key] = result
+    return result
