@@ -392,6 +392,6 @@ def normalize_paper_id(raw: object) -> str:
     recorded twice, not two papers.
 
     Files on disk keep their original names; lookups go through
-    `silver/paper_id_map.parquet` instead of renaming 2,600+ files.
+    `gold/paper_id_map.parquet` instead of renaming 2,600+ files.
     """
     return str(raw or "").strip().lower()

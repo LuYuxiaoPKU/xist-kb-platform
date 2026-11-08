@@ -106,13 +106,15 @@ paper_id,title,year,journal,doi,pmid,species,taxonomic_group,first_author,status
 deng2011_10_1038_nature09898,Evidence for compensatory upregulation of expressed X-linked genes,2011,Nature Genetics,10.1038/ng.986,22019772,Mus musculus,Rodent,Jun Deng,text_downloaded
 ```
 
-`paper_id` 有两种风格并存。88% 的既有论文是 `{Author}{Year}_{keyword}`（`Balaton2016_escape`、
-`Lee2005_regulation`）；带 DOI 的新论文用 `{Author}{Year}_{DOI 下划线化}`。**跟随该论文在
-V2 里已有的命名**，不要为了套用规则去重命名已有文件。
+`paper_id` 有两种风格并存，且分布取决于你看哪一批。**全库 296,835 篇里 82.7% 是 DOI
+风格**（`deng2011_10_1038_ng_986`）；而**已精注的 13,469 篇里 92.5% 是
+`{Author}{Year}_{keyword}`**（`Balaton2016_escape`、`Lee2005_regulation`）——人工精注
+挑的多是早期、无 DOI 规范命名的文献。两种都合法，**新论文跟随该篇在 V2 里已有的命名**，
+不要为了套规则去重命名已有文件。
 
 CSV 的 `paper_id`、`notes/json/{paper_id}.json`、`notes/claims/{paper_id}_claims.csv`、
 `papers/text/{paper_id}.txt` 四处用同一个名字。**大小写可以不一致**——平台读取时统一
-小写（`vocab.py:normalize_paper_id`），再经 `silver/paper_id_map.parquet` 映射回真实
+小写（`vocab.py:normalize_paper_id`），再经 `gold/paper_id_map.parquet` 映射回真实
 文件名，实测注册表小写、三个文件大写也能正确关联。但**拼写必须一致**：
 `Deng2011_evidence` 与 `Deng2011_expression` 会被当成两篇论文，后者成为孤儿 claim。
 
@@ -216,7 +218,9 @@ schema，但只有 `claims` 数组是必填的——其余空着不会报错，�
 ### 3. 全文：`papers/text/{paper_id}.txt`
 
 纯文本，UTF-8。缺了不阻塞入库，但该论文的所有 claim 都没有字符区间溯源，也不能在
-全文检索页里定位。已有的 PDF 走 V2 的 `--parse` 生成：
+全文检索页里定位——`paragraph` 拿不到逐字原文就只能写 `not reported`，溯源全落 S/C 档。
+
+#### 3.1 已有 PDF 的
 
 ```bash
 cd /path/to/XIST_Project_V2
@@ -224,6 +228,83 @@ py scripts/run_pipeline.py --parse
 ```
 
 `--parse` 只处理 `papers/pdf/` 里有、`papers/text/` 里没有的论文，可重复跑。
+**它不下载任何东西**——没有 PDF 时它是空操作。
+
+#### 3.2 没有 PDF 的：按可得性取开放获取全文
+
+全库 296,835 篇里只有 13,431 篇有全文、13,469 篇有精注（`papers.has_text` /
+`has_annotation`）。**已有全文或 PDF 却还没精注的只有 35 篇**（27 有全文、34 有 PDF，
+有重叠）——这批是零成本可补的，优先做。剩下 28 万余篇只有题录，且 **`papers.abstract`
+全库 100% 为空**（原始层就没抓，不是抓取失败），没有全文就只能靠题录。
+
+抽样实测（无精注池随机 20 篇，按 DOI 走 EuropePMC → eutils）：**约 30% 能拿到结构化
+全文**；有 PMCID 的那部分里约 67%。上限不高，但绝对值有 8 万篇量级。
+
+获取顺序，每一层都要显式判定成功，**不能只看 HTTP 200**：
+
+| 顺序 | 来源 | 判定成功的唯一标准 |
+|---|---|---|
+| 1 | Europe PMC `search?query=DOI:"..."&resultType=core` | 返回里有 `pmcid` 字段 |
+| 2 | NCBI eutils `efetch?db=pmc` | **XML 里有 `<body>`** |
+| 3 | Unpaywall `best_oa_location.url_for_pdf` | 非空，拿到 PDF 再走 `--parse` |
+| 4 | Europe PMC `{PMCID}/fullTextXML` | 200 且有 `<body>` |
+
+**四条实测过的坑，每一条都会让「看起来成功」变成「实际没有内容」：**
+
+1. **PMC OA Web Service（`oa.fcgi`）已于 2026-08-25 退役**，现在一律返回 404。
+   不要再用它做 OA 预检或取 FTP 包。
+2. **eFetch 对非 OA 论文返回 HTTP 200 但无 `<body>`**，正文位置只有一行 XML 注释
+   `<!--The publisher of this article does not allow downloading of the full text in XML form.-->`。
+   实测 `PMC3535588`、`PMC5468617` 两篇 `inEPMC=Y` 的论文都是这种：响应 10–11 KB，
+   解析完只剩标题和作者。**必须解析后确认 `<body>` 存在。**
+3. **Europe PMC `fullTextXML` 对非 OA 返回 500，且有限速**，连续请求容易把限速误判成
+   「没有全文」。同一篇间隔约 30 秒再试。
+4. **不要用返回字节数判断成败。** NCBI BioC 接口对这两篇各返回 6,140 字节的**错误页**，
+   两篇长度一模一样——长度像正文，内容不是。判定只能靠 `<body>` 或退出码。
+
+对应地，成功与失败的判定应该是：
+
+```bash
+# 拿到 XML 之后，用这一句判定，不要看 HTTP 状态码
+grep -qi '</body>' article.xml && echo FULL_TEXT || echo METADATA_ONLY
+```
+
+写入后做最小验收，两个条件都要满足：
+
+```bash
+wc -c "papers/text/${PAPER_ID}.txt"   # 一般 > 10,000 字节
+grep -ciE '^(main|results|methods|discussion)' "papers/text/${PAPER_ID}.txt"  # ≥1
+```
+
+低于 2,000 字节的几乎都是拿错了内容，回到上一步重新判定，不要进库。
+
+**批量作业的四条规矩：**
+
+- **串行 + 间隔**，实测约 0.4 秒/请求且偶发 500；并发只会更快触发限速。
+- **先建档再取正文**：先跑一遍 PMCID 解析，把「有 PMCID / 无 PMCID」分表落盘，
+  再只对有 PMCID 的取正文，避免对注定失败的 55% 反复请求。
+- **失败要分类记录**，每篇记 `ok / metadata_only / no_pmcid / http_error` 并汇总成
+  CSV。否则「尝试了 8 万篇、成功 6 千」和「补了 8 万篇」在报告里长得一样。
+- **不要用 Sci-Hub。** 本仓库定位是可公开发布的知识库，绕版权的内容会让整份数据
+  无法分发。
+
+#### 3.3 用 Kady 的 paper-lookup 技能
+
+Kady 的 `paper-lookup` 技能封装了上述判定，其 `jats_to_text.py` 在无 `<body>` 时
+以退出码 2 失败并在 stderr 说明原因，不会把元数据当全文：
+
+```bash
+# DOI -> PMCID -> JATS -> 纯文本
+curl -s "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi?db=pmc&id=${PMCID}&retmode=xml" \
+  | py <paper-lookup>/scripts/jats_to_text.py - --text-only -o "papers/text/${PAPER_ID}.txt"
+```
+
+退出码 0 = 拿到正文，2 = 只有元数据（非 OA，应改走 Unpaywall 或标 `abstract_only`）。
+
+Windows 上**必须用 `-o` 写文件**，或设 `PYTHONIOENCODING=utf-8`。直接写 stdout 会因
+GBK 编码遇到 `–`、`−` 等字符抛 `UnicodeEncodeError`。
+
+> 这个脚本的路径取决于 Kady 的安装位置，本仓库里没有它，别按图索骥去找。
 
 ### 4. 在 V2 侧抽出派生层
 

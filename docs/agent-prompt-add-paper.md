@@ -100,10 +100,11 @@ grep -i "<doi 或标题关键词>" metadata/papers.csv
 姓氏首字母大写。例：DOI `10.1038/ng.986`、2011 年、第一作者 Deng →
 `Deng2011_10_1038_ng_986`。
 
-库里 88% 的论文并不用这种 DOI 风格，而是 `{Author}{Year}_{keyword}`，例如
-`Balaton2016_escape`、`Lee2005_regulation`、`Deng2011_evidence`。两种风格并存是
-历史事实。**新论文跟随该论文在 V2 里已有的命名**——如果 PDF 已经叫某个名字，
-就用那个名字，不要按 DOI 规则重命名。只有全新加入、毫无既有命名的论文才用 DOI 风格。
+两种命名风格并存，比例取决于看哪一批：全库 296,835 篇中 82.7% 是 DOI 风格；
+而已精注的 13,469 篇里 92.5% 是 `{Author}{Year}_{keyword}`（如 `Balaton2016_escape`、
+`Lee2005_regulation`）。**新论文跟随该篇在 V2 里已有的命名**——如果 PDF 已经叫某个
+名字，就用那个名字，不要按 DOI 规则重命名。只有全新加入、毫无既有命名的论文才用
+DOI 风格。
 
 下面四个文件用**同一个** `paper_id`：
 - `metadata/papers.csv` 里的 `paper_id`
@@ -112,7 +113,7 @@ grep -i "<doi 或标题关键词>" metadata/papers.csv
 - `papers/text/{paper_id}.txt`
 
 **大小写不必完全一致**——平台在读取时统一小写（`vocab.py:normalize_paper_id`），
-并通过 `silver/paper_id_map.parquet` 映射回磁盘上的真实文件名。实测：注册表用
+并通过 `gold/paper_id_map.parquet` 映射回磁盘上的真实文件名。实测：注册表用
 `balaton2016_escape`、三个文件用 `Balaton2016_Escape`，迁移后 claims 与全文都能
 正确关联。但**拼写必须一致**：`Deng2011_evidence` 与 `Deng2011_expression` 会被
 当成两篇论文，前者有全文、后者变成孤儿 claim。
@@ -202,7 +203,36 @@ cd "C:/00_Data/实验室/实验室/MetaAnalysis/XIST_Project_V2"
 py scripts/run_pipeline.py --parse
 ```
 
-`--parse` 只处理有 PDF 没 text 的，可重复跑。没有全文也能入库，只是溯源区间为空、全文检索搜不到。
+`--parse` 只处理有 PDF 没 text 的，可重复跑。**它不下载任何东西**——没有 PDF 时是空操作。
+
+没有 PDF 时按可得性取开放获取全文，四层依次降级：
+
+| 顺序 | 来源 | 判定成功的唯一标准 |
+|---|---|---|
+| 1 | Europe PMC `search?query=DOI:"..."&resultType=core` | 返回里有 `pmcid` |
+| 2 | NCBI eutils `efetch?db=pmc` | **XML 里有 `<body>`** |
+| 3 | Unpaywall `best_oa_location.url_for_pdf` | 非空，拿 PDF 再走 `--parse` |
+| 4 | Europe PMC `{PMCID}/fullTextXML` | 200 且有 `<body>` |
+
+实测约 **30%** 的论文能拿到全文（有 PMCID 的那部分里约 67%）。四条坑：
+
+1. `oa.fcgi` 已于 2026-08-25 退役，一律 404。
+2. **eFetch 对非 OA 返回 200 但无 `<body>`**，只有一行被解析器丢弃的 XML 注释。
+   实测 `PMC3535588`、`PMC5468617` 都是这样，响应 10 KB 但只有标题作者。
+3. Europe PMC `fullTextXML` 对非 OA 返回 500 且有限速，间隔约 30 秒。
+4. **不要按字节数判断。** NCBI BioC 对上面两篇各返回 6,140 字节错误页，长度完全相同。
+
+判定只用这一句，不要看 HTTP 码：
+
+```bash
+grep -qi '</body>' article.xml && echo FULL_TEXT || echo METADATA_ONLY
+```
+
+写入后验收：文件 > 10,000 字节，且 `grep -ciE '^(main|results|methods|discussion)'` ≥ 1。
+低于 2,000 字节的几乎都是拿错内容，回上一步重判，不要进库。
+
+批量时串行 + 间隔（约 0.4 秒/请求），先解析 PMCID 分表落盘再取正文，每篇记
+`ok / metadata_only / no_pmcid / http_error`。**不要用 Sci-Hub**——本仓库要公开发布。
 
 ## 第 3 步：本地抽派生层（**这一步最容易漏**）
 
