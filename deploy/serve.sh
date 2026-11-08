@@ -55,17 +55,24 @@ start() {
     echo "starting on $HOST:$PORT; log: $LOG_FILE"
     # The loop is the supervised process; uvicorn is its child. Restarting only
     # uvicorn keeps the PID file stable, so `stop` always finds the loop.
-    (
-        echo $$ > "$PID_FILE"
+    #
+    # `setsid` detaches the loop from the controlling terminal. Without it the
+    # loop dies with the SSH session that started it, while its uvicorn child
+    # survives as an orphan: the service answers requests but nothing supervises
+    # it, and `status` reports "not running". That is exactly what the first
+    # deployment of this script did.
+    #
+    # `$BASHPID` rather than `$$`: inside a subshell `$$` is the parent shell's
+    # PID, so the file named the SSH session instead of the loop.
+    setsid bash -c '
+        echo $BASHPID > "$1"
         while true; do
-            "$PYTHON" -m xist_kb.api.serve --host "$HOST" --port "$PORT" \
-                >>"$LOG_FILE" 2>&1 || true
-            echo "$(date -Is) uvicorn exited, restarting in 5s" >>"$LOG_FILE"
+            "$2" -m xist_kb.api.serve --host "$3" --port "$4" >>"$5" 2>&1 || true
+            echo "$(date -Is) uvicorn exited, restarting in 5s" >>"$5"
             sleep 5
         done
-    ) &
-    disown
-    sleep 2
+    ' _ "$PID_FILE" "$PYTHON" "$HOST" "$PORT" "$LOG_FILE" </dev/null >>"$LOG_FILE" 2>&1 &
+    sleep 3
     if pid="$(running_pid)"; then
         echo "started (pid $pid)"
     else
