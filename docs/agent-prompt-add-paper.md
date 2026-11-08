@@ -11,18 +11,32 @@
 服务器 `162.105.248.197`，用户 **`luyx`**（普通账号）。全程不得使用 root、
 `sudo`、`su root`。所有路径写绝对路径。
 
-## 关键前提：三个位置各有什么
+## 关键前提：四个位置各有什么
 
 先读这一节再动手，否则会改错地方。
 
 | 位置 | 内容 | 能不能跑 V2 代码 |
 |---|---|---|
-| 本地 `C:/00_Data/实验室/实验室/MetaAnalysis/XIST_Project_V2` | V2 全量源数据 + `src/xist_v2` 代码 + `templates/` + `claude` CLI | **能**。注释、claims 抽取、证据表、SQLite 都只在这里做 |
+| 本地 `C:/00_Data/实验室/实验室/MetaAnalysis/XIST_Project_V2` | V2 全量源数据 + `src/xist_v2` 代码 + `templates/` + `claude` CLI | **能**。claims 抽取、证据表、SQLite 都只在这里做 |
 | 本地 `.../MetaAnalysis/xist-kb-platform` | 平台代码（git 仓库） | 能，但只做开发测试 |
 | 服务器 `/Data7/luyx/XIST-KB/data/v2src` | V2 源数据的副本（`metadata/`、`notes/`、`papers→`、`xist_knowledge.db`） | **不能**。没有 `src/xist_v2`，没有 `claude` CLI |
 | 服务器 `/Data7/luyx/XIST-KB/app` | git clone 的平台代码 + `.venv` + `.env` | 能跑 `xist migrate-v2` 和 `scripts/rebuild_derived.py` |
 
 结论：**注释和派生表在本地做完，只把产物同步到服务器，然后在服务器重建。**
+
+### 谁来做精读
+
+精读（读全文 → 产出 `notes/json/{paper_id}.json`）**不走 V2 的 `--annotate`**。
+那条路是 `claude -p` 子进程（`src/xist_v2/llm/claude_agent.py:117`），由 Claude 生成。
+如果精读交给 Kady（本机运行的 k-dense BYOK agent，`Kady.exe`，监听
+`127.0.0.1:8000`），就跳过 `--annotate`，让 Kady 直接把 JSON 写到
+`notes/json/{paper_id}.json`。
+
+两种方式产物必须完全一致：同一个 schema、同样的字段名、同一个存放位置。
+下游只认文件，不关心是谁写的。
+
+Kady 写完 JSON 之后，从**第 1 步**（查重）开始按本文档执行——第 3 步的
+`--claims` 及之后必须跑，只写 JSON 不会进平台。
 
 ## 第 1 步：确认论文不在库中
 
