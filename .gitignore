@@ -19,7 +19,10 @@ papers/
 __pycache__/
 *.py[cod]
 *.egg-info/
-build/
+# Anchored to the repository root: an unanchored `build/` also matched
+# `src/xist_kb/build/`, and that source package was silently absent from every
+# commit until the server deploy failed with ModuleNotFoundError.
+/build/
 dist/
 .venv/
 venv/
