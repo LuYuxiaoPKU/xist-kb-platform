@@ -28,6 +28,12 @@ SILVER_DIR = DATA_DIR / "silver"  # normalized entity tables
 GOLD_DIR = DATA_DIR / "gold"  # query-ready claims/papers/chunks
 INDEX_DIR = DATA_DIR / "index"  # DuckDB views and FTS indexes
 
+# Where the V2 checkout's paper texts live. Needed at query time by the
+# context endpoint, which serves character spans out of the raw text; the
+# dataset is 681 MB, so it is read in place rather than copied into the data
+# tree. The server keeps it at /Data7/luyx/XIST-KB/v2/papers/text.
+TEXT_DIR = Path(os.environ.get("XIST_KB_TEXT_DIR") or DATA_DIR / "v2" / "papers" / "text")
+
 
 def layer_dir(layer: str) -> Path:
     """Return the directory for a data layer, raising on unknown names."""

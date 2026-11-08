@@ -8,10 +8,25 @@ should call the CLI or the HTTP API, not import from xist_kb directly.
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 import typer
 from rich.console import Console
+from rich.markup import escape
+
+# Paper text is full of characters the Windows console codepage cannot encode
+# (thin spaces, ligatures, Greek letters). Printing them raises
+# UnicodeEncodeError mid-output; reconfiguring to UTF-8 with replacement keeps
+# the command usable there. On Linux this is already UTF-8 and a no-op.
+if sys.platform == "win32":
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
 
 app = typer.Typer(
     add_completion=False,
@@ -144,6 +159,79 @@ def search(
         if row.get("title"):
             console.print(f"  [dim]{row['title']} ({row['paper_id']})[/dim]")
         console.print()
+
+
+@app.command()
+def context(
+    claim_id: str = typer.Argument(..., help="Claim id, or a substring of it"),
+    section: bool = typer.Option(
+        False, "--section", help="Print the section body instead of previewing it"
+    ),
+) -> None:
+    """Show where a claim came from: its quote spans, or its section body."""
+    from xist_kb.extract import context as ctx
+    from xist_kb.models_context import ContextKind
+    from xist_kb.paths import TEXT_DIR
+    from xist_kb.query.engine import connect
+
+    conn = connect()
+    rows = conn.execute(
+        "SELECT claim_id, paper_id, quote, section FROM claims WHERE claim_id = ?",
+        [claim_id],
+    ).fetchall()
+    if not rows:
+        matches = conn.execute(
+            "SELECT claim_id FROM claims WHERE claim_id LIKE ? LIMIT 5",
+            [f"%{claim_id}%"],
+        ).fetchall()
+        if not matches:
+            console.print(f"[red]no claim matching {claim_id!r}[/red]")
+            raise typer.Exit(code=1)
+        if len(matches) > 1:
+            console.print(f"[yellow]{len(matches)} claims match:[/yellow]")
+            for (found,) in matches:
+                console.print(f"  {found}")
+            raise typer.Exit(code=1)
+        claim_id = matches[0][0]
+        rows = conn.execute(
+            "SELECT claim_id, paper_id, quote, section FROM claims WHERE claim_id = ?",
+            [claim_id],
+        ).fetchall()
+
+    found_id, paper_id, quote, sec = rows[0]
+    text = ctx.TextStore(TEXT_DIR).get(paper_id)
+    result = ctx.build_context(found_id, paper_id, quote, sec, text)
+
+    console.print(f"[bold]{paper_id}[/bold] · annotation section: {sec or '-'}")
+    if result.kind is ContextKind.QUOTE:
+        noun = "span" if len(result.spans) == 1 else "spans"
+        console.print(f"[green]quote located[/green] ({len(result.spans)} {noun})")
+        for span in result.spans[:5]:
+            before = text[max(0, span.start - 80) : span.start] if text else ""
+            after = text[span.end : span.end + 80] if text else ""
+            console.print(
+                f"  [dim]…{escape(before)}[/dim][bold]{escape(span.text)}[/bold]"
+                f"[dim]{escape(after)}…[/dim]"
+            )
+            console.print(f"  [dim]offsets {span.start}:{span.end}[/dim]")
+    elif result.kind is ContextKind.SECTION:
+        body = result.section
+        assert body is not None
+        pct = round(100 * body.fraction_of_paper)
+        console.print(
+            f"[yellow]section only[/yellow] — {body.name}, "
+            f"{body.char_count:,} chars ({pct}% of the paper)"
+        )
+        if section:
+            console.print()
+            console.print(body.text, markup=False, highlight=False)
+        else:
+            console.print()
+            console.print(body.text[:2000], markup=False, highlight=False)
+            if body.char_count > 2000:
+                console.print(f"[dim]… {body.char_count - 2000:,} more chars (--section)[/dim]")
+    else:
+        console.print(f"[dim]no context: {result.reason}[/dim]")
 
 
 @app.command()
